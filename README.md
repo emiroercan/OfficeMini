@@ -81,6 +81,8 @@ NO_STRIP=true npm run tauri build
 
 The build produces an `.rpm`, a `.deb` and an `AppImage` under `src-tauri/target/release/bundle`. Install the RPM with `sudo dnf install ./OfficeMini-*.rpm`; it registers `.docx` and `.md` file associations.
 
+On Wayland sessions the app runs through XWayland by default: GTK3/WebKitGTK spends several seconds of main-thread CPU compositing the window after launch under the native Wayland backend (visible as flashing and lag on hybrid-GPU laptops), and under X11 the same startup is about ten times cheaper. Set `GDK_BACKEND=wayland` to override.
+
 ## Releases and automatic updates
 
 Installed copies check GitHub Releases quietly a few seconds after start (at most once every six hours) and offer to download and install a newer version; Help > Check for updates… does it on demand. Updates are signed: the app only installs bundles whose signature matches the public key in `src-tauri/tauri.conf.json`.

@@ -145,7 +145,14 @@ const table: NodeSpec = {
     if (props.width && props.width.type === "pct") style += `width:${fmt(props.width.w / 50)}%;`;
     else if (props.width && props.width.type === "dxa" && props.width.w > 0) style += `width:${fmt(twipsToPx(props.width.w))}px;`;
     else if (total) style += `width:${fmt(twipsToPx(total))}px;`;
-    if (props.jc === "center") style += "margin-left:auto;margin-right:auto;";
+    const pos = props.pos;
+    if (pos && (pos.xSpec || pos.x !== null && pos.x !== undefined)) {
+      // Floating table: honour the horizontal position relative to the text/margin edge
+      // (page-anchored offsets are treated the same; text does not wrap around the table).
+      if (pos.xSpec === "center") style += "margin-left:auto;margin-right:auto;";
+      else if (pos.xSpec === "right" || pos.xSpec === "outside") style += "margin-left:auto;";
+      else if (pos.xSpec !== "left" && pos.xSpec !== "inside" && pos.x) style += `margin-left:${fmt(twipsToPx(pos.x))}px;`;
+    } else if (props.jc === "center") style += "margin-left:auto;margin-right:auto;";
     else if (props.jc === "right" || props.jc === "end") style += "margin-left:auto;";
     else {
       const ind = (props.indent ?? st.tblPr.indent ?? 0) - (mar.left ?? 108);

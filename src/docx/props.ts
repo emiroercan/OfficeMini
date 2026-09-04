@@ -69,6 +69,8 @@ export interface TableProps {
   look?: string | null;
   shd?: string | null;
   cellSpacing?: number | null;
+  /** Floating table position (w:tblpPr): offsets in twips relative to the anchors. */
+  pos?: { x?: number | null; y?: number | null; xSpec?: string | null; ySpec?: string | null; horzAnchor?: string | null; vertAnchor?: string | null } | null;
 }
 
 export interface RowProps {
@@ -263,6 +265,7 @@ export function parseTblPr(el: Element | null): TableProps {
       case "tblLook": p.look = wattr(c, "val"); break;
       case "shd": { const fill = wattr(c, "fill"); if (fill && fill.toLowerCase() !== "auto") p.shd = fill; break; }
       case "tblCellSpacing": { const w = wint(c, "w"); if (w !== null) p.cellSpacing = w; break; }
+      case "tblpPr": p.pos = { x: wint(c, "tblpX"), y: wint(c, "tblpY"), xSpec: wattr(c, "tblpXSpec"), ySpec: wattr(c, "tblpYSpec"), horzAnchor: wattr(c, "horzAnchor"), vertAnchor: wattr(c, "vertAnchor") }; break;
     }
   }
   return p;
