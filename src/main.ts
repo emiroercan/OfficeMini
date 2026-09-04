@@ -439,13 +439,18 @@ function addRecent(path: string) {
 // ---------------------------------------------------------------------------
 // Zoom / view
 
-function setZoom(z: number) {
-  z = Math.max(0.5, Math.min(3, Math.round(z * 100) / 100));
+let zoomSaveTimer: ReturnType<typeof setTimeout> | null = null;
+/** Apply a zoom factor; `fine` keeps two decimals (pinch) instead of snapping to whole percents. */
+function setZoom(z: number, fine = false) {
+  z = Math.max(0.5, Math.min(3, fine ? Math.round(z * 1000) / 1000 : Math.round(z * 100) / 100));
+  if (z === app.zoom) return;
   app.zoom = z;
   document.documentElement.style.setProperty("--zoom", String(z));
   setZoomFactor(z);
   app.settings.zoom = z;
-  F.saveSettings(app.settings);
+  // A pinch or wheel burst produces dozens of events; write the settings file once it settles.
+  if (zoomSaveTimer) clearTimeout(zoomSaveTimer);
+  zoomSaveTimer = setTimeout(() => { zoomSaveTimer = null; F.saveSettings(app.settings); }, 400);
   updateStatus();
 }
 
@@ -1164,12 +1169,18 @@ function installGlobalKeys() {
     else if (k === "f11") { e.preventDefault(); F.toggleFullscreen(); }
     else if (k === "escape" && !findVisible) { closeAllPopups(); view().focus(); }
   });
-  // Ctrl+wheel zoom
+  // Ctrl+wheel and touchpad pinch zoom. The listener is passive so plain scrolling never waits for
+  // JavaScript (a non-passive wheel listener makes WebKit scroll only after the handler has run,
+  // which shows as laggy touchpad scrolling). The webview's own zoom hotkeys are disabled in
+  // tauri.conf.json, so there is no default action to prevent.
   $("workspace").addEventListener("wheel", (e) => {
     if (!e.ctrlKey) return;
-    e.preventDefault();
-    setZoom(app.zoom + (e.deltaY < 0 ? 0.1 : -0.1));
-  }, { passive: false });
+    // Pinch gestures arrive as ctrl+wheel with small pixel deltas: zoom proportionally and
+    // continuously. A real mouse wheel (line deltas or large pixel steps) zooms in 10% steps.
+    const pinch = e.deltaMode === 0 && Math.abs(e.deltaY) < 40;
+    if (pinch) setZoom(app.zoom * Math.exp(-e.deltaY * 0.01), true);
+    else setZoom(app.zoom + (e.deltaY < 0 ? 0.1 : -0.1));
+  }, { passive: true });
   // Middle-click / plain click on the gray area focuses the editor.
   $("workspace").addEventListener("mousedown", (e) => {
     if (e.target === $("workspace") || e.target === $("pagearea") || (e.target as HTMLElement).classList?.contains("page-bg")) {

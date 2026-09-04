@@ -188,8 +188,9 @@ export function shortcutsDialog(list: Shortcut[]) {
 
 export function aboutDialog() {
   showDialog("About OfficeMini", el("div", null,
-    el("p", null, "OfficeMini 0.1 — a small, fast editor for Word (.docx) and Markdown files."),
+    el("p", null, el("b", null, `OfficeMini ${__APP_VERSION__}`), " — a small, fast editor for Word (.docx) and Markdown files."),
     el("p", null, "Files are saved with a round-trip strategy: everything the editor does not understand is preserved exactly as it was."),
     el("p", { style: { color: "var(--ui-muted)" } }, "Press Ctrl+/ for keyboard shortcuts."),
+    el("p", { style: { color: "var(--ui-muted)", fontSize: "12px" } }, `Build ${__BUILD_INFO__}`),
   ), [{ label: "Close", primary: true }]);
 }

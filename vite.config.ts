@@ -1,6 +1,7 @@
 import { defineConfig, Plugin } from "vite";
 import fs from "node:fs";
 import path from "node:path";
+import { execSync } from "node:child_process";
 
 /** Dev-only endpoint: POST /__save?name=<file> writes the body to samples/out (browser-mode testing). */
 function devSave(): Plugin {
@@ -25,10 +26,16 @@ function devSave(): Plugin {
   };
 }
 
+const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "package.json"), "utf-8")) as { version: string };
+let commit = "";
+try { commit = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); } catch { /* not a git checkout */ }
+const buildInfo = `${commit || "local"}, ${new Date().toISOString().slice(0, 10)}`;
+
 // Tauri expects a fixed port; fail if that port is not available.
 export default defineConfig({
   clearScreen: false,
   plugins: [devSave()],
+  define: { __APP_VERSION__: JSON.stringify(pkg.version), __BUILD_INFO__: JSON.stringify(buildInfo) },
   server: {
     port: 1420,
     strictPort: true,
