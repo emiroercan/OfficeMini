@@ -1,6 +1,6 @@
 [package]
 name = "officemini"
-version = "0.2.1"
+version = "0.2.2"
 description = "A small, fast word processor for DOCX and Markdown"
 authors = ["Emir"]
 edition = "2021"
