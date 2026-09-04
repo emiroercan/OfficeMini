@@ -115,6 +115,51 @@ export function insertPlainText(view: EditorView, text: string) {
   view.dispatch(view.state.tr.replaceSelection(slice).scrollIntoView());
 }
 
+// ---------------------------------------------------------------------------
+// Smart quotes and dashes while typing (Word-style AutoCorrect, toggleable).
+
+let smartTyping = true;
+export function setSmartTyping(on: boolean) { smartTyping = on; }
+
+function smartTypingPlugin() {
+  return new Plugin({
+    props: {
+      handleTextInput(view, from, to, text) {
+        if (!smartTyping || text.length !== 1) return false;
+        const { state } = view;
+        // Never inside code-like fonts.
+        const marks = state.storedMarks || state.selection.$from.marks();
+        const rpr = marks.find((m) => m.type === schema.marks.rpr);
+        if (rpr && /consolas|courier|mono/i.test(rpr.attrs.props?.font || "")) return false;
+        const before = state.doc.textBetween(Math.max(0, from - 2), from, "\n", "￼");
+        const prev = before.slice(-1);
+        const opening = !prev || /[\s(\[{‘“ \-–—]/.test(prev);
+        let repl: string | null = null;
+        if (text === '"') repl = opening ? "“" : "”";
+        else if (text === "'") repl = opening ? "‘" : "’";
+        else if (text === "-" && /\p{L}-$/u.test(before)) { view.dispatch(state.tr.insertText("—", from - 1, to)); return true; }
+        if (repl === null) return false;
+        view.dispatch(state.tr.insertText(repl, from, to));
+        return true;
+      },
+      // " - " between words becomes an en dash once the next word starts (Word behaviour).
+      handleKeyDown(view, event) {
+        if (!smartTyping || event.key !== " " || event.ctrlKey || event.altKey || event.metaKey) return false;
+        const { state } = view;
+        if (!state.selection.empty) return false;
+        const pos = state.selection.from;
+        const before = state.doc.textBetween(Math.max(0, pos - 3), pos, "\n", "￼");
+        if (/\S -$/.test(before) === false) return false;
+        // Look back further: only when a word precedes " -".
+        const ctx2 = state.doc.textBetween(Math.max(0, pos - 12), pos, "\n", "￼");
+        if (!/\p{L}\s-$/u.test(ctx2)) return false;
+        view.dispatch(state.tr.insertText("– ", pos - 1, pos));
+        return true;
+      },
+    },
+  });
+}
+
 export interface EditorHandle {
   view: EditorView;
   shortcuts: Shortcut[];
@@ -135,6 +180,7 @@ export function createEditor(doc: PMNode, opts: EditorOptions): EditorHandle {
     gapCursor(),
     linkClickPlugin(),
     pastePlugin(),
+    smartTypingPlugin(),
   ];
   const state = EditorState.create({ doc, plugins: plugins() });
   const view = new EditorView(opts.mount, {

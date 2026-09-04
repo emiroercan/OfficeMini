@@ -252,96 +252,171 @@ export function markdownToDoc(md: string): PMNode {
 // ---------------------------------------------------------------------------
 // Document -> Markdown
 
-export interface MarkdownResult { markdown: string; assets: { name: string; bytes: Uint8Array }[]; }
+export interface MarkdownResult { markdown: string; assets: { name: string; bytes: Uint8Array }[]; blockLines: number[]; }
+
+interface Fmt { b: boolean; i: boolean; code: boolean; strike: boolean; u: boolean; mark: boolean; sup: boolean; sub: boolean; size: number | null; color: string | null; link: string | null; }
+interface Seg { text: string; fmt: Fmt; raw?: string; }
+
+function fmtEq(a: Fmt, b: Fmt): boolean {
+  return a.b === b.b && a.i === b.i && a.code === b.code && a.strike === b.strike && a.u === b.u && a.mark === b.mark && a.sup === b.sup && a.sub === b.sub && a.size === b.size && a.color === b.color && a.link === b.link;
+}
+
+function escapeMd(s: string): string {
+  return s.replace(/([\\`*_{}\[\]<>#+!|~])/g, "\\$1").replace(/^(\s*)(\d+)\.(\s)/, "$1$2\\.$3").replace(/^(\s*)([-+])(\s)/, "$1\\$2$3");
+}
+
+/** Wrap a segment: whitespace at the edges stays outside the markers so emphasis parses. */
+function wrapSeg(seg: Seg): string {
+  if (seg.raw !== undefined) return seg.raw;
+  const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(seg.text)!;
+  const lead = m[1], core = m[2], trail = m[3];
+  if (!core) return seg.text;
+  const f = seg.fmt;
+  let s: string;
+  if (f.code) s = "`" + core.replace(/`/g, "``") + "`";
+  else {
+    s = escapeMd(core);
+    const styles: string[] = [];
+    if (f.size) styles.push(`font-size:${f.size / 2}pt`);
+    if (f.color) styles.push(`color:#${f.color}`);
+    if (styles.length) s = `<span style="${styles.join(";")}">${s}</span>`;
+    if (f.u) s = `<u>${s}</u>`;
+    if (f.mark) s = `<mark>${s}</mark>`;
+    if (f.sup) s = `<sup>${s}</sup>`;
+    if (f.sub) s = `<sub>${s}</sub>`;
+    if (f.b && f.i) s = `***${s}***`; else if (f.b) s = `**${s}**`; else if (f.i) s = `*${s}*`;
+    if (f.strike) s = `~~${s}~~`;
+  }
+  if (f.link) s = `[${s}](${f.link})`;
+  return lead + s + trail;
+}
 
 export function docToMarkdown(doc: PMNode, resolveImage: (node: PMNode) => { name: string; bytes: Uint8Array } | null): MarkdownResult {
   const assets: { name: string; bytes: Uint8Array }[] = [];
   const lines: string[] = [];
-  let prevWasList = false;
+  const blockLines: number[] = [];
+  let prevKind: "list" | "para" | "other" | null = null;
+  const listCounters = new Map<string, number>();
 
-  const inlineMd = (para: PMNode): string => {
-    let s = "";
+  const segsOf = (para: PMNode): Seg[] => {
+    const segs: Seg[] = [];
+    const paraFont = paragraphStyle(para).rPr;
     para.forEach((n) => {
       const t = n.type.name;
       if (t === "text") {
         const m = n.marks.find((mk) => mk.type === schema.marks.rpr);
-        const p = m ? effectiveRunProps(m.attrs.props as RunProps) : {};
-        let txt = n.text || "";
+        const p: RunProps = m ? effectiveRunProps(m.attrs.props as RunProps) : {};
         const link = n.marks.find((mk) => mk.type === schema.marks.link);
-        const esc = txt.replace(/([*_`\\])/g, "\\$1");
-        let w = esc;
-        const code = /consolas|courier|mono/i.test(p.font || "");
-        if (code) w = "`" + txt.replace(/`/g, "``") + "`";
-        else {
-          if (p.b && p.i) w = "***" + w + "***"; else if (p.b) w = "**" + w + "**"; else if (p.i) w = "*" + w + "*";
-          if (p.strike) w = "~~" + w + "~~";
-        }
-        if (link && link.attrs.href) w = `[${w}](${link.attrs.href})`;
-        s += w;
-      } else if (t === "tab") s += "\t";
-      else if (t === "hard_break") s += n.attrs.kind === "page" ? "\n\n<div style=\"page-break-after: always\"></div>\n\n" : "  \n";
+        const code = /consolas|courier|mono/i.test(p.font || "") && !/consolas|courier|mono/i.test(paraFont.font || "");
+        const fmt: Fmt = {
+          b: !!p.b && !paraFont.b, i: !!p.i && !paraFont.i, code, strike: !!p.strike, u: !!p.u && p.u !== "none", mark: !!p.highlight && p.highlight !== "none",
+          sup: p.vertAlign === "superscript", sub: p.vertAlign === "subscript",
+          size: p.size && p.size !== paraFont.size ? p.size : null, color: p.color && p.color !== "auto" && p.color !== paraFont.color ? p.color : null,
+          link: link && link.attrs.href ? link.attrs.href : null,
+        };
+        segs.push({ text: n.text || "", fmt });
+      } else if (t === "tab") segs.push({ text: "\t", fmt: plain(), raw: "\t" });
+      else if (t === "hard_break") segs.push({ text: "\n", fmt: plain(), raw: n.attrs.kind === "page" ? "\n\n<div style=\"page-break-after: always\"></div>\n\n" : "  \n" });
       else if (t === "image") {
         const a = resolveImage(n);
-        if (a) { assets.push(a); s += `![${n.attrs.alt || n.attrs.name || ""}](${a.name})`; }
-        else if (/^https?:/.test(n.attrs.src)) s += `![${n.attrs.alt || ""}](${n.attrs.src})`;
-      } else if (t === "opaque_inline") s += n.attrs.text || "";
-      else if (t === "textbox") { n.forEach((b) => { if (b.type === schema.nodes.paragraph) s += inlineMd(b) + " "; }); }
+        if (a) { assets.push(a); segs.push({ text: "", fmt: plain(), raw: `![${n.attrs.alt || n.attrs.name || ""}](${a.name})` }); }
+        else if (/^https?:/.test(n.attrs.src)) segs.push({ text: "", fmt: plain(), raw: `![${n.attrs.alt || ""}](${n.attrs.src})` });
+      } else if (t === "opaque_inline") segs.push({ text: n.attrs.text || "", fmt: plain() });
+      else if (t === "textbox") { n.forEach((b) => { if (b.type === schema.nodes.paragraph) segs.push(...segsOf(b), { text: " ", fmt: plain() }); }); }
     });
-    return s;
+    // merge neighbours with identical formatting
+    const out: Seg[] = [];
+    for (const s of segs) {
+      const last = out[out.length - 1];
+      if (last && last.raw === undefined && s.raw === undefined && fmtEq(last.fmt, s.fmt)) last.text += s.text;
+      else out.push({ ...s });
+    }
+    return out;
   };
+  const plain = (): Fmt => ({ b: false, i: false, code: false, strike: false, u: false, mark: false, sup: false, sub: false, size: null, color: null, link: null });
+  const inlineMd = (para: PMNode): string => segsOf(para).map(wrapSeg).join("");
+  const codeLines = (para: PMNode): string[] => {
+    const parts: string[] = [""];
+    para.forEach((n) => { if (n.type.name === "hard_break") parts.push(""); else if (n.type.name === "tab") parts[parts.length - 1] += "\t"; else parts[parts.length - 1] += n.textContent; });
+    while (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
+    return parts;
+  };
+  const blank = () => { if (lines.length && lines[lines.length - 1] !== "") lines.push(""); };
 
-  const writePara = (p: PMNode, prefixIndent = "") => {
+  const writePara = (p: PMNode) => {
     const eff = paragraphStyle(p).pPr;
-    const text = inlineMd(p);
     const style = (eff.pStyle || "").toLowerCase();
     const hm = /heading\s?(\d)/.exec(style) || /^(?:başlık|titre|überschrift)\s?(\d)/.exec(style);
     if (eff.numId) {
       const lvl = ctx.numLevel(eff.numId, eff.ilvl || 0);
       const bullet = !lvl || lvl.numFmt === "bullet";
       const indent = "  ".repeat(eff.ilvl || 0);
-      lines.push(prefixIndent + indent + (bullet ? "- " : "1. ") + text);
-      prevWasList = true;
+      if (prevKind !== "list") { blank(); listCounters.clear(); }
+      const ck = eff.numId + ":" + (eff.ilvl || 0);
+      const n = (listCounters.get(ck) || 0) + 1;
+      listCounters.set(ck, n);
+      for (const [k] of listCounters) if (parseInt(k.split(":")[1], 10) > (eff.ilvl || 0)) listCounters.delete(k);
+      blockLines.push(lines.length);
+      lines.push(indent + (bullet ? "- " : `${n}. `) + inlineMd(p));
+      prevKind = "list";
       return;
     }
-    if (prevWasList) { lines.push(""); prevWasList = false; }
-    if (hm) { lines.push(prefixIndent + "#".repeat(Math.min(6, parseInt(hm[1], 10))) + " " + text); lines.push(""); return; }
-    if (style === "title") { lines.push(prefixIndent + "# " + text); lines.push(""); return; }
-    if (style === "quote" || style === "intensequote") { lines.push(prefixIndent + "> " + text); lines.push(""); return; }
-    if (style === "code") { lines.push(prefixIndent + "    " + p.textContent); return; }
-    if (eff.bdrBottom && !text.trim()) { lines.push(prefixIndent + "---"); lines.push(""); return; }
-    lines.push(prefixIndent + text);
-    lines.push("");
+    blank();
+    blockLines.push(lines.length);
+    prevKind = "para";
+    const text = inlineMd(p);
+    if (hm) { lines.push("#".repeat(Math.min(6, parseInt(hm[1], 10))) + " " + text); return; }
+    if (style === "title") { lines.push("# " + text); return; }
+    if (style === "quote" || style === "intensequote") { lines.push("> " + text); return; }
+    if (style === "code" || /consolas|courier|mono/i.test(paragraphStyle(p).rPr.font || "")) {
+      lines.push("```", ...codeLines(p), "```");
+      return;
+    }
+    if (eff.bdrBottom && !p.textContent.trim()) { lines.push("---"); return; }
+    if (!p.content.size || !p.textContent.trim() && !text.trim()) { lines.push("&nbsp;"); return; }
+    const jc = eff.jc;
+    if (jc === "center" || jc === "right" || jc === "both") {
+      lines.push(`<div align="${jc === "both" ? "justify" : jc}">`, "", text, "", "</div>");
+      return;
+    }
+    lines.push(text);
   };
 
   doc.forEach((node) => {
     if (node.type === schema.nodes.paragraph) writePara(node);
     else if (node.type === schema.nodes.table) {
-      if (prevWasList) { lines.push(""); prevWasList = false; }
+      blank();
+      blockLines.push(lines.length);
+      prevKind = "other";
       const rows: string[][] = [];
-      node.forEach((row) => {
+      let headerAllBold = true;
+      node.forEach((row, _o, ri) => {
         const cells: string[] = [];
         row.forEach((cell) => {
           const parts: string[] = [];
           cell.forEach((b) => { if (b.type === schema.nodes.paragraph) parts.push(inlineMd(b)); });
           let txt = parts.join("<br>").replace(/\|/g, "\\|").trim();
+          if (ri === 0) {
+            const m = /^\*\*([^*]+)\*\*$/.exec(txt);
+            if (m) txt = m[1]; else if (txt) headerAllBold = false;
+          }
           cells.push(txt);
           for (let i = 1; i < (cell.attrs.colspan as number); i++) cells.push("");
         });
         rows.push(cells);
       });
+      void headerAllBold;
       if (rows.length) {
         const width = Math.max(...rows.map((r) => r.length));
         const pad = (r: string[]) => { while (r.length < width) r.push(""); return r; };
         lines.push("| " + pad(rows[0]).join(" | ") + " |");
         lines.push("|" + new Array(width).fill(" --- ").join("|") + "|");
         for (let i = 1; i < rows.length; i++) lines.push("| " + pad(rows[i]).join(" | ") + " |");
-        lines.push("");
       }
-    } else if (node.type === schema.nodes.opaque_block) { /* skip */ }
+    } else if (node.type === schema.nodes.opaque_block) { blockLines.push(lines.length); }
   });
-  // collapse triple blank lines
-  const md = lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
-  return { markdown: md, assets };
+  const md = lines.join("\n").trimEnd() + "\n";
+  return { markdown: md, assets, blockLines };
 }
 
 export type { ParaProps };

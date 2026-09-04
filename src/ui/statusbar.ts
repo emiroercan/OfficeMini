@@ -9,7 +9,7 @@ export interface StatusHandlers {
 }
 
 export interface StatusHandle {
-  update(s: { page: number; pages: number; words: number; zoom: number; mode: "page" | "continuous"; dirty: boolean; status?: string; isMd: boolean; source: boolean; dark: boolean }): void;
+  update(s: { page: number; pages: number; words: number; selWords?: number; zoom: number; mode: "page" | "continuous"; dirty: boolean; status?: string; isMd: boolean; source: boolean; dark: boolean }): void;
   flash(msg: string): void;
 }
 
@@ -47,7 +47,8 @@ export function buildStatusbar(container: HTMLElement, h: StatusHandlers): Statu
   return {
     update(s) {
       pageEl.textContent = s.source ? "Markdown source" : `Page ${s.page} of ${s.pages}`;
-      wordsEl.textContent = `${s.words} word${s.words === 1 ? "" : "s"}`;
+      wordsEl.textContent = s.selWords ? `${s.selWords} of ${s.words} words` : `${s.words} word${s.words === 1 ? "" : "s"}`;
+      wordsEl.classList.toggle("sel-count", !!s.selWords);
       zoom = Math.round(s.zoom * 100);
       range.value = String(zoom);
       zoomLabel.textContent = zoom + "%";

@@ -93,6 +93,67 @@ fn save_settings(app: AppHandle, json: String) -> Result<(), String> {
     std::fs::write(dir.join("settings.json"), json).map_err(|e| e.to_string())
 }
 
+#[derive(serde::Serialize)]
+struct FileInfo {
+    name: String,
+    path: String,
+    size: u64,
+    mtime: u64,
+}
+
+fn mtime_secs(md: &std::fs::Metadata) -> u64 {
+    md.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Per-user data directory for recovery copies (created on demand).
+#[tauri::command]
+fn recovery_dir(app: AppHandle) -> Result<String, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("recovery");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn list_files(dir: String) -> Result<Vec<FileInfo>, String> {
+    let mut out = Vec::new();
+    let rd = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd,
+        Err(_) => return Ok(out),
+    };
+    for entry in rd.flatten() {
+        if let Ok(md) = entry.metadata() {
+            if md.is_file() {
+                out.push(FileInfo {
+                    name: entry.file_name().to_string_lossy().into_owned(),
+                    path: entry.path().to_string_lossy().into_owned(),
+                    size: md.len(),
+                    mtime: mtime_secs(&md),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+fn delete_file(path: String) -> Result<(), String> {
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{}: {}", path, e)),
+    }
+}
+
+/// Modification time in seconds since the epoch, or null when the file does not exist.
+#[tauri::command]
+fn file_mtime(path: String) -> Option<u64> {
+    std::fs::metadata(&path).ok().map(|md| mtime_secs(&md))
+}
+
 /// Open a path with the OS default handler (used for hyperlinks / "show in folder").
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
@@ -181,6 +242,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             read_file,
             write_file,
@@ -190,7 +252,11 @@ pub fn run() {
             open_window,
             load_settings,
             save_settings,
-            open_external
+            open_external,
+            recovery_dir,
+            list_files,
+            delete_file,
+            file_mtime
         ])
         .setup(|app| {
             // The first window is created from tauri.conf.json (hidden); the frontend

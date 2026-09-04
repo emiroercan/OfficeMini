@@ -14,6 +14,9 @@ A small, fast word processor for `.docx` and Markdown files. Built with Tauri 2 
 - Dark mode (`Ctrl+Shift+D`): the interface and the page go dark; dark text becomes light and light fills become dark while hues are kept, transparent images get a light plate so logos stay visible, photos are left alone. Printing always uses the light theme.
 - Markdown files can be edited rendered or as raw source (`Ctrl+Alt+M`, or the "Markdown source" button in the status bar); images referenced by relative paths are loaded from the file's folder.
 - Large embedded images are inflated after the text is on screen, so a 10 MB document still opens in about 100 ms.
+- Start screen with recent files and recovered documents when launched without a file; window size and position are remembered.
+- A recovery copy of unsaved work is written every minute (Format menu to switch off); after a crash the start screen offers it, and opening a file with a newer recovery copy asks which one to use.
+- Smart quotes and dashes while typing (Format menu to switch off); the status bar shows the word count of the selection.
 - Undo/redo, hyperlinks, headers and footers with page numbers, page setup, printing.
 - Right-click context menus for text, links, images and tables; tooltips show every shortcut; `Ctrl+/` opens the full shortcut list.
 - `.docx` and `.md` files get their own icons in Explorer after installation.

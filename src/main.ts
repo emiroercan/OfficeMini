@@ -10,7 +10,7 @@ import { writeDocx } from "./docx/write";
 import { blankDocxBytes } from "./docx/template";
 import { ctx } from "./docx/styles";
 import { markdownToDoc, docToMarkdown } from "./md/markdown";
-import { createEditor, EditorHandle, requestPlainPaste, selectPos, redrawView } from "./editor/editor";
+import { createEditor, EditorHandle, requestPlainPaste, selectPos, redrawView, setSmartTyping } from "./editor/editor";
 import { numberingKey } from "./editor/lists";
 import { setDarkMode } from "./docx/props";
 import { AppActions, Shortcut, keyLabel } from "./editor/keymap";
@@ -42,6 +42,8 @@ const app = {
   showMarks: false,
   theme: "light" as "light" | "dark",
   source: false,
+  welcome: false,
+  recoveryId: null as string | null,
   pages: 1,
   settings: {} as F.Settings,
   shortcuts: [] as Shortcut[],
@@ -98,6 +100,164 @@ function installDocument(loaded: LoadedDoc, doc: PMNode, path: string | null, ki
   if (loaded.warnings.length) console.warn("Document warnings:", loaded.warnings);
 }
 
+// ---------------------------------------------------------------------------
+// Welcome screen (start without a document) and crash recovery
+
+interface RecoveryEntry { id: string; path: string | null; name: string; file: string; savedAt: number; kind: "docx" | "md"; }
+
+function fileKind(path: string): "docx" | "md" { return F.extname(path) === "docx" ? "docx" : "md"; }
+
+async function buildWelcome(recovered: RecoveryEntry[]) {
+  const w = $("welcome");
+  w.innerHTML = "";
+  const card = el("div", { class: "welcome-card" });
+  card.append(el("h1", null, "OfficeMini"), el("div", { class: "sub" }, "Open a document or start a new one. Word and Markdown files, fast."));
+  const actions = el("div", { class: "welcome-actions" });
+  const newBtn = el("button", { class: "primary" }, icon("new"), "New document");
+  newBtn.addEventListener("click", () => { hideWelcome(); view().focus(); });
+  const openBtn = el("button", null, icon("open"), "Open…");
+  openBtn.addEventListener("click", () => openFile());
+  actions.append(newBtn, openBtn);
+  card.append(actions);
+  if (recovered.length) {
+    const box = el("div", { class: "welcome-recovery" });
+    box.append(el("h2", null, "Recovered documents"));
+    for (const r of recovered) {
+      const item = el("div", { class: "recent-item", title: r.path || "Unsaved document" });
+      const ic = el("span", { class: "ri-icon " + r.kind }, r.kind === "docx" ? "W" : "M");
+      const name = el("span", { class: "ri-name" }, r.name);
+      const when = el("span", { class: "ri-path", style: { direction: "ltr" } }, "autosaved " + new Date(r.savedAt).toLocaleString());
+      const x = el("span", { class: "ri-x", title: "Discard recovered copy" }, "✕");
+      x.addEventListener("click", async (e) => { e.stopPropagation(); await discardRecovery(r); item.remove(); if (!box.querySelector(".recent-item")) box.remove(); });
+      item.append(ic, name, when, x);
+      item.addEventListener("click", () => openRecovered(r));
+      box.append(item);
+    }
+    card.append(box);
+  }
+  const recent = app.settings.recent || [];
+  if (recent.length) {
+    card.append(el("h2", null, "Recent"));
+    const list = el("div", { class: "recent-list" });
+    for (const p of recent) {
+      const exists = F.isTauri ? await F.fileExists(p) : true;
+      const item = el("div", { class: "recent-item" + (exists ? "" : " missing"), title: p });
+      const ic = el("span", { class: "ri-icon " + fileKind(p) }, fileKind(p) === "docx" ? "W" : "M");
+      const name = el("span", { class: "ri-name" }, F.basename(p));
+      const dir = el("span", { class: "ri-path" }, F.dirname(p));
+      const x = el("span", { class: "ri-x", title: "Remove from list" }, "✕");
+      x.addEventListener("click", (e) => { e.stopPropagation(); app.settings.recent = (app.settings.recent || []).filter((q) => q !== p); F.saveSettings(app.settings); item.remove(); });
+      item.append(ic, name, dir, x);
+      item.addEventListener("click", () => { if (exists) openPath(p); else app.status?.flash("File not found: " + p); });
+      list.append(item);
+    }
+    card.append(list);
+  }
+  card.append(el("div", { class: "welcome-hint" }, "Ctrl+O open · Ctrl+N new · Ctrl+/ all shortcuts · drop a file on the window to open it"));
+  w.append(card);
+}
+function showWelcome() { app.welcome = true; $("welcome").hidden = false; }
+function hideWelcome() { if (!app.welcome) return; app.welcome = false; $("welcome").hidden = true; }
+
+function recoveryIdFor(path: string | null): string {
+  if (!path) return "untitled-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  let h = 0;
+  for (let i = 0; i < path.length; i++) h = (h * 31 + path.charCodeAt(i)) >>> 0;
+  return "doc-" + h.toString(16) + "-" + F.basename(path).replace(/[^\w.-]+/g, "_").slice(0, 40);
+}
+
+/** After a successful DOCX write, the written package becomes the base for further saves. */
+function rebaseLoaded(bytes: Uint8Array) {
+  const reloaded = loadDocx(bytes);
+  app.loaded = { ...reloaded, doc: view().state.doc };
+}
+
+/** Write a recovery copy of a dirty document (called every minute). */
+async function autosaveTick() {
+  if (!F.isTauri || !app.dirty || app.settings.autosave === false || !app.handle) return;
+  const dir = await F.recoveryDir();
+  if (!dir) return;
+  if (!app.recoveryId) app.recoveryId = recoveryIdFor(app.path);
+  const kind: "docx" | "md" = app.kind === "md" ? "md" : "docx";
+  try {
+    let bytes: Uint8Array;
+    if (kind === "md") {
+      const text = app.source ? sourceTextarea().value : docToMarkdown(view().state.doc, () => null).markdown;
+      bytes = new TextEncoder().encode(text);
+    } else {
+      if (!app.loaded) app.loaded = await loadBlank();
+      bytes = writeDocx(app.loaded, view().state.doc);
+      rebaseLoaded(bytes);
+    }
+    await F.writeFile(F.joinPath(dir, app.recoveryId + "." + kind), bytes);
+    await F.writeFile(F.joinPath(dir, app.recoveryId + ".json"), new TextEncoder().encode(JSON.stringify({ path: app.path, name: docName(), savedAt: Date.now(), kind })));
+    app.status?.flash("Recovery copy saved");
+  } catch (e) { console.warn("autosave failed", e); }
+}
+
+async function clearRecovery() {
+  if (!F.isTauri || !app.recoveryId) return;
+  const dir = await F.recoveryDir();
+  if (!dir) return;
+  for (const ext of ["docx", "md", "json"]) await F.deleteFile(F.joinPath(dir, app.recoveryId + "." + ext));
+  app.recoveryId = null;
+}
+
+async function discardRecovery(r: RecoveryEntry) {
+  const dir = await F.recoveryDir();
+  if (!dir) return;
+  for (const ext of ["docx", "md", "json"]) await F.deleteFile(F.joinPath(dir, r.id + "." + ext));
+}
+
+/** Recovery copies whose original was not saved afterwards. */
+async function findRecoveries(): Promise<RecoveryEntry[]> {
+  if (!F.isTauri) return [];
+  const dir = await F.recoveryDir();
+  if (!dir) return [];
+  const files = await F.listFiles(dir);
+  const out: RecoveryEntry[] = [];
+  for (const f of files) {
+    if (!f.name.endsWith(".json")) continue;
+    try {
+      const meta = JSON.parse(await F.readTextFile(f.path));
+      const id = f.name.slice(0, -5);
+      const data = files.find((x) => x.name === id + "." + meta.kind);
+      if (!data) { await F.deleteFile(f.path); continue; }
+      // Stale if the original has been saved since the recovery copy was written.
+      if (meta.path) {
+        const mt = await F.fileMtime(meta.path);
+        if (mt !== null && mt * 1000 >= meta.savedAt - 1500) { await discardRecovery({ id, path: meta.path, name: "", file: data.path, savedAt: 0, kind: meta.kind }); continue; }
+      }
+      out.push({ id, path: meta.path || null, name: meta.name || data.name, file: data.path, savedAt: meta.savedAt || f.mtime * 1000, kind: meta.kind === "md" ? "md" : "docx" });
+    } catch { /* ignore broken sidecar */ }
+  }
+  return out.sort((a, b) => b.savedAt - a.savedAt);
+}
+
+async function openRecovered(r: RecoveryEntry) {
+  await openPath(r.file);
+  app.path = r.path;
+  app.kind = r.path ? fileKind(r.path) : "new";
+  app.recoveryId = r.id;
+  if (r.path) { const list = (app.settings.recent || []).filter((p) => p !== r.file); app.settings.recent = list; F.saveSettings(app.settings); }
+  setDirty(true);
+  updateTitle();
+  app.status?.flash("Recovered copy opened - save to keep it");
+}
+
+/** When a document opens and a newer recovery copy of it exists, offer it. */
+async function offerRecoveryFor(path: string) {
+  const entries = await findRecoveries();
+  const r = entries.find((e) => e.path === path);
+  if (!r) return;
+  showDialog("Recovered version found", el("div", null,
+    el("p", null, `An autosaved copy of "${F.basename(path)}" from ${new Date(r.savedAt).toLocaleString()} is newer than the file on disk.`),
+    el("p", { style: { color: "var(--ui-muted)" } }, "Open the recovered copy, or discard it and keep the file as it is.")), [
+    { label: "Discard copy", action: () => { discardRecovery(r); } },
+    { label: "Open recovered copy", primary: true, action: () => { openRecovered(r); } },
+  ]);
+}
+
 async function openPath(path: string) {
   const t0 = performance.now();
   app.loading = true;
@@ -120,7 +280,10 @@ async function openPath(path: string) {
       throw new Error("Unsupported file type: ." + ext);
     }
     addRecent(path);
+    hideWelcome();
+    app.recoveryId = null;
     app.status?.flash(`Opened in ${Math.round(performance.now() - t0)} ms`);
+    offerRecoveryFor(path);
   } catch (e) {
     console.error(e);
     await F.showMessage("Could not open the file.\n\n" + (e as Error).message, "OfficeMini", "error");
@@ -169,6 +332,8 @@ async function newDocument() {
   if (app.dirty || app.path) { await F.openInNewWindow(); return; }
   const blank = await loadBlank();
   installDocument(blank, blank.doc, null, "new");
+  app.recoveryId = null;
+  hideWelcome();
 }
 
 async function openFile() {
@@ -234,15 +399,11 @@ async function writeTo(path: string): Promise<boolean> {
       if (!app.loaded) app.loaded = await loadBlank();
       const bytes = writeDocx(app.loaded, doc);
       await F.writeFile(path, bytes);
-      // The written package is now the base for future saves.
-      const reloaded = loadDocx(bytes);
-      const sel = view().state.selection;
-      const keepMode = app.mode;
-      // Keep the live document but adopt the reloaded package/rels so new images/links are stable.
-      app.loaded = { ...reloaded, doc };
-      void keepMode; void sel;
+      // The written package is now the base for future saves (fresh rels/media ids).
+      rebaseLoaded(bytes);
     }
     setDirty(false);
+    clearRecovery();
     app.status?.flash(`Saved in ${Math.round(performance.now() - t0)} ms`);
     return true;
   } catch (e) {
@@ -259,7 +420,7 @@ async function confirmDiscard(): Promise<boolean> {
     let decided = false;
     showDialog("Save changes?", el("div", null, el("p", null, `Save changes to "${docName()}"?`), el("p", { style: { color: "var(--ui-muted)" } }, "Your changes will be lost if you don't save them.")), [
       { label: "Cancel", action: () => { decided = true; resolve(false); } },
-      { label: "Don't Save", action: () => { decided = true; resolve(true); } },
+      { label: "Don't Save", action: () => { decided = true; clearRecovery(); resolve(true); } },
       { label: "Save", primary: true, action: () => { decided = true; save().then(resolve); } },
     ], { onClose: () => { if (!decided) resolve(false); } });
   });
@@ -327,7 +488,10 @@ function updateStatus() {
   if (!app.status || !app.handle) return;
   const state = view().state;
   const { words } = C.countWords(state.doc);
-  app.status.update({ page: pageAt(state, state.selection.from), pages: app.pages, words, zoom: app.zoom, mode: app.mode, dirty: app.dirty, isMd: app.kind === "md", source: app.source, dark: app.theme === "dark" });
+  const sel = state.selection;
+  let selWords = 0;
+  if (!sel.empty) { const m = state.doc.textBetween(sel.from, sel.to, " ", " ").match(/[^\s ]+/g); selWords = m ? m.length : 0; }
+  app.status.update({ page: pageAt(state, state.selection.from), pages: app.pages, words, selWords, zoom: app.zoom, mode: app.mode, dirty: app.dirty, isMd: app.kind === "md", source: app.source, dark: app.theme === "dark" });
 }
 
 // ---------------------------------------------------------------------------
@@ -642,6 +806,8 @@ function docToSource(): string {
     sourceMediaMap.set(name, { bytes: mb.bytes, ext: mb.ext, src: a.src });
     return { name, bytes: mb.bytes };
   });
+  sourceBlockLines = res.blockLines;
+  lastSourceText = res.markdown;
   return res.markdown;
 }
 
@@ -662,14 +828,28 @@ function sourceToDoc(text: string): PMNode {
   return schema.nodeFromJSON(json);
 }
 
+let sourceBlockLines: number[] = [];
+
 function enterSourceView() {
   if (app.source) return;
+  if (findVisible) hideFind();
   const ta = sourceTextarea();
+  const v = view();
+  // Which top-level block holds the caret? Put the text cursor on the matching line.
+  const $from = v.state.selection.$from;
+  const blockIndex = $from.depth ? $from.index(0) : 0;
   ta.value = docToSource();
+  const line = sourceBlockLines[Math.min(blockIndex, sourceBlockLines.length - 1)] ?? 0;
   app.source = true;
   $("workspace").classList.add("source");
+  $("toolbar").classList.add("disabled");
   ta.focus();
-  ta.setSelectionRange(0, 0);
+  let offset = 0;
+  const parts = ta.value.split("\n");
+  for (let i = 0; i < line && i < parts.length; i++) offset += parts[i].length + 1;
+  ta.setSelectionRange(offset, offset);
+  const lh = parseFloat(getComputedStyle(ta).lineHeight) || 20;
+  ta.scrollTop = Math.max(0, line * lh - ta.clientHeight / 3);
   updateStatus();
 }
 
@@ -677,17 +857,29 @@ function leaveSourceView() {
   if (!app.source) return;
   const ta = sourceTextarea();
   const wasDirty = app.dirty;
+  // Caret line -> block index so the rendered view opens at the same place.
+  const caretLine = ta.value.slice(0, ta.selectionStart).split("\n").length - 1;
+  let blockIndex = 0;
+  for (let i = 0; i < sourceBlockLines.length; i++) if (sourceBlockLines[i] <= caretLine) blockIndex = i;
   app.loading = true;
   try {
     const doc = sourceToDoc(ta.value);
-    app.handle!.setDocument(doc);
+    const v = view();
+    // Replace the content in one undoable step (keeps history and plugin state).
+    const tr = v.state.tr.replaceWith(0, v.state.doc.content.size, doc.content);
+    let pos = 1;
+    if (blockIndex < tr.doc.childCount) { pos = 0; for (let i = 0; i < blockIndex; i++) pos += tr.doc.child(i).nodeSize; pos += 1; }
+    tr.setSelection(TextSelection.near(tr.doc.resolve(Math.min(pos, tr.doc.content.size))));
+    v.dispatch(tr.scrollIntoView());
   } finally { app.loading = false; }
   app.source = false;
   $("workspace").classList.remove("source");
-  setDirty(wasDirty);
+  $("toolbar").classList.remove("disabled");
+  setDirty(wasDirty || ta.value !== lastSourceText);
   view().focus();
   updateStatus();
 }
+let lastSourceText = "";
 
 function toggleSourceView() {
   if (app.source) { leaveSourceView(); return; }
@@ -878,6 +1070,9 @@ function buildMenubar() {
         ] },
         { sep: true },
         { label: "Clear formatting", key: key("clear"), action: () => run(C.clearFormatting) },
+        { sep: true },
+        { label: "Smart quotes and dashes while typing", checked: app.settings.smartQuotes !== false, action: () => { app.settings.smartQuotes = app.settings.smartQuotes === false; setSmartTyping(app.settings.smartQuotes); F.saveSettings(app.settings); } },
+        { label: "Autosave recovery copy every minute", checked: app.settings.autosave !== false, action: () => { app.settings.autosave = app.settings.autosave === false; F.saveSettings(app.settings); } },
       ];
     } },
     { title: "Table", alt: "t", items: () => {
@@ -1023,7 +1218,7 @@ async function boot() {
     pagesEl: $("pages"),
     actions,
     onUpdate: (v) => {
-      if (v.state.doc !== lastDoc) { lastDoc = v.state.doc; if (!app.loading) setDirty(true); }
+      if (v.state.doc !== lastDoc) { lastDoc = v.state.doc; if (!app.loading) { setDirty(true); hideWelcome(); } }
       app.toolbar?.update(v.state);
       updateStatus();
       if (findVisible) findbar.refresh();
@@ -1048,12 +1243,19 @@ async function boot() {
   const params = new URLSearchParams(location.search);
   let file = params.get("file");
   if (!file) { const args = await F.cliArgs(); if (args.length) { file = args[0]; for (const extra of args.slice(1)) F.openInNewWindow(extra); } }
+  setSmartTyping(app.settings.smartQuotes !== false);
   if (file) await openPath(file);
-  else { setDirty(false); lastDoc = handle.view.state.doc; }
+  else {
+    // No document requested: show the welcome screen with recent files and any recovered copies.
+    const recovered = await findRecoveries();
+    await buildWelcome(recovered);
+    showWelcome();
+  }
   lastDoc = handle.view.state.doc;
   setDirty(false);
   handle.view.focus();
   setTimeout(revealWindow, 400);
+  setInterval(() => { autosaveTick(); }, 60000);
   // Quiet update check a few seconds after start (never blocks opening a document).
   setTimeout(() => { checkForUpdates(false); }, 8000);
 

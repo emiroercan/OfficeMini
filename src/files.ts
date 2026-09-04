@@ -140,6 +140,31 @@ export async function showMessage(message: string, title = "OfficeMini", kind: "
   alert(message);
 }
 
+// ---- Recovery copies --------------------------------------------------------
+
+export interface FileInfo { name: string; path: string; size: number; mtime: number; }
+
+export async function recoveryDir(): Promise<string | null> {
+  if (!isTauri) return null;
+  try { const inv = await invoke(); return await inv("recovery_dir"); } catch { return null; }
+}
+
+export async function listFiles(dir: string): Promise<FileInfo[]> {
+  if (!isTauri) return [];
+  try { const inv = await invoke(); return await inv("list_files", { dir }); } catch { return []; }
+}
+
+export async function deleteFile(path: string): Promise<void> {
+  if (!isTauri) return;
+  try { const inv = await invoke(); await inv("delete_file", { path }); } catch { /* ignore */ }
+}
+
+/** Modification time (seconds) or null if the file does not exist. */
+export async function fileMtime(path: string): Promise<number | null> {
+  if (!isTauri) return null;
+  try { const inv = await invoke(); return await inv("file_mtime", { path }); } catch { return null; }
+}
+
 export async function cliArgs(): Promise<string[]> {
   if (isTauri) { const inv = await invoke(); return inv("cli_args"); }
   return [];
@@ -162,6 +187,8 @@ export interface Settings {
   showMarks?: boolean;
   theme?: "light" | "dark";
   findOptions?: { caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean; preserveCase?: boolean };
+  smartQuotes?: boolean;
+  autosave?: boolean;
 }
 
 export async function loadSettings(): Promise<Settings> {

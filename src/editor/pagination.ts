@@ -445,6 +445,7 @@ export function paginationPlugin(opts: PaginationOptions): Plugin<PagState> {
     const st = paginationKey.getState(view.state)!;
     const sect: SectProps = view.state.doc.attrs.sect;
     if (st.mode !== "page") {
+      lastSig = ""; // page mode must re-dispatch its breaks when we come back
       applyContinuous(view, sect);
       layoutTabs(view);
       layoutAnchors(view, null);
