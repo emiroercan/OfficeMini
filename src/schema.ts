@@ -65,6 +65,7 @@ const paragraph: NodeSpec = {
     inTable: { default: false },
     sdt: { default: null },        // {id, pr} block content-control wrapper
     sectPr: { default: null },     // raw w:sectPr for a section break in this paragraph
+    src: { default: null },        // index into LoadedDoc.origEls: the original w:p this came from
   },
   parseDOM: [
     { tag: "p", getAttrs: (dom) => attrsFromHtmlBlock(dom as HTMLElement) },
@@ -126,6 +127,7 @@ const table: NodeSpec = {
     props: { default: {} },     // TableProps
     grid: { default: null },    // number[] twips
     sdt: { default: null },
+    src: { default: null },     // index into LoadedDoc.origEls (original w:tbl)
   },
   parseDOM: [{ tag: "table", getAttrs: () => ({ props: { tblStyle: ctx.styleIdByName("Table Grid") || null }, grid: null }) }],
   toDOM(node) {
@@ -163,6 +165,7 @@ const table_row: NodeSpec = {
   attrs: {
     trPr: { default: null },
     props: { default: {} }, // RowProps
+    src: { default: null }, // index into LoadedDoc.origEls (original w:tr)
   },
   parseDOM: [{ tag: "tr", getAttrs: () => ({ props: {} }) }],
   toDOM(node) {

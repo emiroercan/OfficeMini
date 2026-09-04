@@ -253,7 +253,19 @@ export class DocxWriter {
     }
   }
 
+  /** The original XML of a paragraph, row or table that has not been edited since it was loaded, else null. */
+  private verbatim(node: PMNode): string | null {
+    const src = node.attrs.src;
+    if (typeof src !== "number") return null;
+    const orig = this.loaded.origNodes[src];
+    const el = this.loaded.origEls[src];
+    return orig && el && node.eq(orig) ? this.frag.ser(el) : null;
+  }
+
   writeParagraph(node: PMNode): string {
+    // Untouched paragraph: re-emit the original w:p (runs, rsids, proofErr, everything).
+    const raw = this.verbatim(node);
+    if (raw !== null) return raw;
     const props = node.attrs.props as ParaProps;
     const pPr = this.buildPPr(node.attrs.pPr, props, node.attrs.sectPr);
     return `<w:p>${pPr}${this.writeInlines(node)}</w:p>`;
@@ -330,7 +342,7 @@ export class DocxWriter {
 
   private rPrFor(mark: Mark | undefined): string {
     if (!mark) return "";
-    const key = (mark.attrs.xml || "") + " " + JSON.stringify(mark.attrs.props);
+    const key = (mark.attrs.xml || "") + "\0" + JSON.stringify(mark.attrs.props);
     let s = this.rprCache.get(key);
     if (s !== undefined) return s;
     const props = mark.attrs.props as RunProps;
@@ -488,6 +500,8 @@ export class DocxWriter {
   // ---- tables -------------------------------------------------------------
 
   writeTable(node: PMNode): string {
+    const rawTbl = this.verbatim(node);
+    if (rawTbl !== null) return rawTbl;
     const props = node.attrs.props as TableProps;
     const map = TableMap.get(node);
     // Column widths: prefer live colwidth attrs (column resizing) over the parsed grid.
@@ -508,6 +522,12 @@ export class DocxWriter {
     // Track vertical merges: pending[col] = {remaining rows, span, tcPrs, index}
     const pending = new Map<number, { rows: number; span: number; tcPrs: string[]; i: number; width: number }>();
     node.forEach((row) => {
+      // An unchanged row is copied verbatim unless it takes part in a vertical merge,
+      // which needs the continuation bookkeeping below.
+      let spans = pending.size > 0;
+      row.forEach((cell) => { if ((cell.attrs.rowspan as number) > 1) spans = true; });
+      const rawRow = spans ? null : this.verbatim(row);
+      if (rawRow !== null) { out += rawRow; return; }
       out += "<w:tr>" + (row.attrs.trPr || "");
       let col = 0;
       const emitPending = () => {

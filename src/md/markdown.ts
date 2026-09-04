@@ -296,6 +296,7 @@ export function docToMarkdown(doc: PMNode, resolveImage: (node: PMNode) => { nam
   const lines: string[] = [];
   const blockLines: number[] = [];
   let prevKind: "list" | "para" | "other" | null = null;
+  let prevListId: number | null = null;   // numId of the current top-level list
   const listCounters = new Map<string, number>();
 
   const segsOf = (para: PMNode): Seg[] => {
@@ -351,7 +352,11 @@ export function docToMarkdown(doc: PMNode, resolveImage: (node: PMNode) => { nam
       const lvl = ctx.numLevel(eff.numId, eff.ilvl || 0);
       const bullet = !lvl || lvl.numFmt === "bullet";
       const indent = "  ".repeat(eff.ilvl || 0);
+      // A new top-level list (different numbering definition) is separated from the
+      // previous one by a blank line, so adjacent bullet/numbered lists stay distinct.
       if (prevKind !== "list") { blank(); listCounters.clear(); }
+      else if (!(eff.ilvl || 0) && prevListId !== null && eff.numId !== prevListId) { blank(); listCounters.clear(); }
+      if (!(eff.ilvl || 0)) prevListId = eff.numId;
       const ck = eff.numId + ":" + (eff.ilvl || 0);
       const n = (listCounters.get(ck) || 0) + 1;
       listCounters.set(ck, n);

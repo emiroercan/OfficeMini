@@ -59,6 +59,10 @@ export interface LoadedDoc {
   footers: Map<string, HeaderFooter>;
   rootDecls: Map<string, string>;
   warnings: string[];
+  /** Original w:p / w:tr / w:tbl elements, indexed by the node's `src` attr (main document, headers and footers). */
+  origEls: Element[];
+  /** The nodes as they were parsed, same index; a node that is still `eq` to its entry is written back verbatim. */
+  origNodes: (PMNode | undefined)[];
 }
 
 const SYMBOL_MAP: Record<number, string> = {
@@ -93,9 +97,13 @@ class BodyParser {
     private rels: Map<string, Relationship>,
     private media: Map<string, MediaEntry>,
     private rootDecls: Map<string, string>,
+    private origEls: Element[] = [],
   ) {}
 
   ser(el: Element): string { return serialize(el, this.rootDecls); }
+
+  /** Keep the original element so an unchanged node can be written back verbatim; returns its `src` index. */
+  private remember(el: Element): number { this.origEls.push(el); return this.origEls.length - 1; }
 
   // ---- blocks -------------------------------------------------------------
 
@@ -167,7 +175,8 @@ class BodyParser {
       this.parseInline(el, content, [], field);
     }
     if (field.depth > 0) this.flushField(field, content);
-    const attrs = { pPr: pPrEl ? this.ser(pPrEl) : null, props, inTable, tblStyle, sdt, sectPr };
+    const src = this.remember(p);
+    const attrs = { pPr: pPrEl ? this.ser(pPrEl) : null, props, inTable, tblStyle, sdt, sectPr, src };
     const node: Json = { type: "paragraph", attrs };
     if (content.length) node.content = content;
     return node;
@@ -600,10 +609,10 @@ class BodyParser {
         if (padSpan > 0) cells.push(this.padCell(padSpan, grid, col));
       }
       if (!cells.length) cells.push(this.padCell(gridCount, grid, 0));
-      rows.push({ type: "table_row", attrs: { trPr: trPrEl ? this.ser(trPrEl) : null, props: rprops }, content: cells });
+      rows.push({ type: "table_row", attrs: { trPr: trPrEl ? this.ser(trPrEl) : null, props: rprops, src: this.remember(tr) }, content: cells });
     }
     if (!rows.length) rows.push({ type: "table_row", attrs: { trPr: null, props: {} }, content: [this.padCell(gridCount, grid, 0)] });
-    return { type: "table", attrs: { tblPr: tblPrEl ? this.ser(tblPrEl) : null, props, grid, sdt }, content: rows };
+    return { type: "table", attrs: { tblPr: tblPrEl ? this.ser(tblPrEl) : null, props, grid, sdt, src: this.remember(tbl) }, content: rows };
   }
 
   private rowGridWidth(tr: Element): number {
@@ -705,12 +714,16 @@ export function loadDocx(bytes: Uint8Array): LoadedDoc {
   const rootDecls = rootNamespaceDecls(root);
   const body = child(root, NS.w, "body");
   if (!body) throw new Error("Document has no body");
-  const parser = new BodyParser(ctx, rels, media, rootDecls);
+  const origEls: Element[] = [];
+  const origNodes: (PMNode | undefined)[] = [];
+  const recordNodes = (d: PMNode) => d.descendants((n) => { if (typeof n.attrs.src === "number") origNodes[n.attrs.src] = n; });
+  const parser = new BodyParser(ctx, rels, media, rootDecls, origEls);
   const sect = parseSectPr(child(body, NS.w, "sectPr"), (e) => parser.ser(e));
   parser.contentWidthPx = Math.max(100, (sect.pgW - sect.marL - sect.marR) / 15);
   const blocks = parser.parseBlocks(body, false, null, null);
   if (!blocks.length) blocks.push(parser.emptyParagraph(false, null, null));
   const doc = schema.nodeFromJSON({ type: "doc", attrs: { sect }, content: blocks });
+  recordNodes(doc);
   warnings.push(...parser.warnings);
 
   // Headers & footers referenced by the final section.
@@ -727,10 +740,11 @@ export function loadDocx(bytes: Uint8Array): LoadedDoc {
       const hfMedia = new Map<string, MediaEntry>();
       loadMedia(pkg, part, hfRels, hfMedia, warnings);
       const hx = parseXml(text);
-      const p = new BodyParser(ctx, hfRels, hfMedia, rootNamespaceDecls(hx.documentElement));
+      const p = new BodyParser(ctx, hfRels, hfMedia, rootNamespaceDecls(hx.documentElement), origEls);
       const hb = p.parseBlocks(hx.documentElement, false, null, null);
       if (!hb.length) hb.push(p.emptyParagraph(false, null, null));
       const hdoc = schema.nodeFromJSON({ type: "doc", attrs: { sect }, content: hb });
+      recordNodes(hdoc);
       into.set(rId, { rId, part, doc: hdoc, xml: text });
     } catch (e) {
       warnings.push("Failed to parse " + part + ": " + (e as Error).message);
@@ -739,7 +753,7 @@ export function loadDocx(bytes: Uint8Array): LoadedDoc {
   for (const id of Object.values(sect.headers)) if (id) loadHF(id, headers);
   for (const id of Object.values(sect.footers)) if (id) loadHF(id, footers);
 
-  return { pkg, ctx, doc, docPart, docXml, rels, media, headers, footers, rootDecls, warnings };
+  return { pkg, ctx, doc, docPart, docXml, rels, media, headers, footers, rootDecls, warnings, origEls, origNodes };
 }
 
 /** Create an empty document with a built-in default template. */

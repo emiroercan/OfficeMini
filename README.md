@@ -71,11 +71,13 @@ Needs the Visual Studio Build Tools with the "Desktop development with C++" work
 ### Fedora Linux
 
 ```bash
-sudo dnf install webkit2gtk4.1-devel openssl-devel curl wget file libappindicator-gtk3-devel librsvg2-devel gcc gcc-c++ make rpm-build
+sudo dnf install webkit2gtk4.1-devel openssl-devel dbus-devel curl wget file libappindicator-gtk3-devel librsvg2-devel gcc gcc-c++ make rpm-build patchelf
 sudo dnf install google-carlito-fonts google-caladea-fonts liberation-fonts   # metric-compatible Calibri/Cambria/Arial replacements
 npm install
-npm run tauri build
+NO_STRIP=true npm run tauri build
 ```
+
+`NO_STRIP=true` is needed on current Fedora: the `strip` bundled inside linuxdeploy predates the `.relr.dyn` relocation sections that Fedora's libraries use, and the AppImage step fails without it. The RPM and DEB are unaffected. The "public key found, but no private key" message at the end only concerns the updater signature and can be ignored for local builds.
 
 The build produces an `.rpm`, a `.deb` and an `AppImage` under `src-tauri/target/release/bundle`. Install the RPM with `sudo dnf install ./OfficeMini-*.rpm`; it registers `.docx` and `.md` file associations.
 
