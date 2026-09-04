@@ -1,0 +1,82 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OfficeMini",
+  "version": "0.2.0",
+  "identifier": "com.fropie.officemini",
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM2Njc2QzBGNDM1NzM3REMKUldUY04xZEREMnhueGxCbXlRNDBON1dZYnZPdWFRQjJXckNtMWgyQ3paWjBWUVFnOWZQZTNaQjEK",
+      "endpoints": ["https://github.com/emiroercan/OfficeMini/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  },
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "OfficeMini",
+        "width": 1100,
+        "height": 820,
+        "minWidth": 520,
+        "minHeight": 360,
+        "visible": false,
+        "center": true,
+        "zoomHotkeysEnabled": false,
+        "dragDropEnabled": true,
+        "backgroundColor": "#e9e9ea"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Productivity",
+    "shortDescription": "Fast DOCX and Markdown editor",
+    "longDescription": "OfficeMini opens, edits and prints Word documents and Markdown files. Small, fast, no bloat.",
+    "fileAssociations": [
+      {
+        "ext": ["docx"],
+        "name": "Word Document",
+        "description": "Microsoft Word document",
+        "role": "Editor",
+        "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      },
+      {
+        "ext": ["md", "markdown"],
+        "name": "Markdown Document",
+        "description": "Markdown text",
+        "role": "Editor",
+        "mimeType": "text/markdown"
+      }
+    ],
+    "resources": ["icons/md.ico", "icons/docx.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "./nsis-hooks.nsh"
+      }
+    },
+    "linux": {
+      "deb": { "depends": [] },
+      "rpm": { "depends": [] }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+# dependencies / build output
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+*.log
+.DS_Store
+Thumbs.db
+
+# personal / test documents never go to the repository
+samples/*
+!samples/test.md
+!samples/.gitkeep
+
+# local secrets (updater signing key lives in ~/.tauri, never here)
+*.key
+*.key.password
+.env

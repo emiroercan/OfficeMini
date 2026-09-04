@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OfficeMini</title>
+    <link rel="stylesheet" href="/src/app.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="menubar"></div>
+      <div id="toolbar"></div>
+      <div id="findbar" hidden></div>
+      <div id="workspace">
+        <div id="pagearea">
+          <div id="pages"></div>
+          <div id="editor"></div>
+        </div>
+        <textarea id="source" spellcheck="true" wrap="soft"></textarea>
+      </div>
+      <div id="statusbar"></div>
+    </div>
+    <div id="overlay"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
