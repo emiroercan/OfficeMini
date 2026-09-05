@@ -81,6 +81,8 @@ NO_STRIP=true npm run tauri build
 
 The build produces an `.rpm`, a `.deb` and an `AppImage` under `src-tauri/target/release/bundle`. Install the RPM with `sudo dnf install ./OfficeMini-*.rpm`; it registers `.docx` and `.md` file associations.
 
+If scrolling and typing feel like they run at half speed on Linux, check the power profile: when the system reports the *power-saver* profile (power-profiles-daemon or tuned-ppd, also on AC power), WebKitGTK caps every page at 30 frames per second and coarsens timers, and the app has no way to opt out. Switch to *Balanced* in the KDE/GNOME power menu, or run `powerprofilesctl set balanced` (or `tuned-adm profile balanced`), and the editor runs at 60 fps again.
+
 On Wayland sessions the app runs through XWayland by default: GTK3/WebKitGTK spends several seconds of main-thread CPU compositing the window after launch under the native Wayland backend (visible as flashing and lag on hybrid-GPU laptops), and under X11 the same startup is about ten times cheaper. Set `GDK_BACKEND=wayland` to override.
 
 ## Releases and automatic updates

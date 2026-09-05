@@ -1282,6 +1282,51 @@ async function boot() {
 
   // Dev helpers (browser mode): expose the app for inspection.
   (window as any).om = { app, view: () => view(), openPath, ctx, writeDocx, loadDocx, schema, writeTo, save, setMode, setZoom, print };
+  if (import.meta.env.DEV && F.isTauri) devBenchChannel();
+}
+
+/**
+ * Dev-only file-based command channel for measuring rendering inside the real webview:
+ * drop JSON into <config>/bench.json ({"scroll": px, "frames": n, "css": "..."}) and
+ * results (per-frame timings) are written next to it as bench.result.json.
+ */
+function devBenchChannel() {
+  const poll = async () => {
+    try {
+      const dir = await F.recoveryDir();
+      if (!dir) return;
+      const trig = F.joinPath(dir, "bench.json");
+      if (!(await F.fileExists(trig))) return;
+      const req = JSON.parse(await F.readTextFile(trig));
+      await F.deleteFile(trig);
+      const ws = $("workspace");
+      let styleEl: HTMLStyleElement | null = null;
+      if (req.css) { styleEl = document.createElement("style"); styleEl.textContent = req.css; document.head.appendChild(styleEl); }
+      if (req.mode) setMode(req.mode);
+      if (req.zoom) setZoom(req.zoom);
+      await new Promise((r) => setTimeout(r, 300));
+      ws.scrollTop = 0;
+      const frames: number[] = [];
+      const step = req.scroll || 40, n = req.frames || 90;
+      await new Promise<void>((done) => {
+        let last = performance.now(), i = 0, dir = 1;
+        const tick = () => {
+          const now = performance.now(); frames.push(now - last); last = now;
+          if (i++ >= n) return done();
+          if (ws.scrollTop + ws.clientHeight >= ws.scrollHeight - 1) dir = -1; else if (ws.scrollTop <= 0) dir = 1;
+          ws.scrollTop += dir * step;
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
+      if (styleEl) styleEl.remove();
+      frames.shift();
+      const sorted = [...frames].sort((a, b) => a - b);
+      const res = { label: req.label || "", frames: frames.length, avgMs: +(frames.reduce((a, b) => a + b, 0) / frames.length).toFixed(1), p50: +sorted[Math.floor(sorted.length / 2)].toFixed(1), p90: +sorted[Math.floor(sorted.length * 0.9)].toFixed(1), maxMs: +sorted[sorted.length - 1].toFixed(1), scrollHeight: ws.scrollHeight, clientHeight: ws.clientHeight, dpr: devicePixelRatio, ua: navigator.userAgent };
+      await F.writeFile(F.joinPath(dir, "bench.result.json"), new TextEncoder().encode(JSON.stringify(res)));
+    } catch (e) { console.warn("bench", e); }
+  };
+  setInterval(poll, 1500);
 }
 
 function revealWindow() {
