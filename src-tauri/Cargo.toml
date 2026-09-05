@@ -1,6 +1,6 @@
 [package]
 name = "officemini"
-version = "0.2.3"
+version = "0.2.4"
 description = "A small, fast word processor for DOCX and Markdown"
 authors = ["Emir"]
 edition = "2021"
@@ -20,6 +20,9 @@ tauri-plugin-process = "2"
 tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"

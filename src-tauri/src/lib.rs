@@ -200,7 +200,19 @@ fn harden_webview(win: &tauri::WebviewWindow) {
     });
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn harden_webview(win: &tauri::WebviewWindow) {
+    use gtk::prelude::*;
+    // The webview paints every pixel of the window, so GTK's own CSS background fill is wasted
+    // work: a full-window software memset on every redraw, and at the 2x buffer scale GTK3 uses
+    // on fractional-scale Wayland outputs it dominated the main thread (sampled with gdb).
+    // An app-paintable window skips that fill.
+    if let Ok(gtk_win) = win.gtk_window() {
+        gtk_win.set_app_paintable(true);
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn harden_webview(_win: &tauri::WebviewWindow) {}
 
 fn url_encode(s: &str) -> String {

@@ -189,6 +189,7 @@ export interface Settings {
   findOptions?: { caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean; preserveCase?: boolean };
   smartQuotes?: boolean;
   autosave?: boolean;
+  autoUpdate?: boolean;   // quiet update check at startup (default on)
 }
 
 export async function loadSettings(): Promise<Settings> {

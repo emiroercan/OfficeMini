@@ -1091,6 +1091,8 @@ function buildMenubar() {
     { title: "Help", alt: "h", items: () => [
       { label: "Keyboard shortcuts", key: key("help"), action: () => shortcutsDialog(app.shortcuts) },
       { label: "Check for updates…", action: () => { checkForUpdates(true); } },
+      { label: "Check for updates automatically", checked: app.settings.autoUpdate !== false, action: () => { app.settings.autoUpdate = app.settings.autoUpdate === false; F.saveSettings(app.settings); } },
+      { sep: true },
       { label: "About OfficeMini", action: () => aboutDialog() },
     ] },
   ];
@@ -1268,7 +1270,7 @@ async function boot() {
   setTimeout(revealWindow, 400);
   setInterval(() => { autosaveTick(); }, 60000);
   // Quiet update check a few seconds after start (never blocks opening a document).
-  setTimeout(() => { checkForUpdates(false); }, 8000);
+  if (app.settings.autoUpdate !== false) setTimeout(() => { checkForUpdates(false); }, 8000);
 
   F.onCloseRequested(confirmDiscard);
   F.onFileDrop((paths) => {
