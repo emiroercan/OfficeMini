@@ -5,7 +5,7 @@ A small, fast word processor for `.docx` and Markdown files. Built with Tauri 2 
 ## What it does
 
 - Opens `.docx`, `.md`, `.txt`; saves `.docx` and `.md` (either can be saved as the other).
-- Page view (default) or continuous view, zoom, formatting marks.
+- Page view (default) or continuous view, formatting marks. Zoom: Ctrl+wheel, touchpad pinch, presets for 100%, page width, whole page and *Actual size* (paper at its physical dimensions, computed from the monitor's reported size; also the first-run default). 100% follows the Word convention of 96 pixels per inch, so it is not physical size on high-density screens. View menu also sets the scroll speed (default 2× on Linux, where touchpads map finger travel 1:1).
 - Text formatting: font, size, bold/italic/underline/strikethrough, super/subscript, colour, highlight, caps.
 - Paragraphs: styles (Normal, Heading 1‑6, Title, Quote…), alignment, indents, line and paragraph spacing, bullets and numbering, page breaks, tab stops.
 - Tables: insert, add/delete rows and columns, merge/split, shading, borders, column resize by dragging, Tab between cells.

@@ -190,6 +190,13 @@ export interface Settings {
   smartQuotes?: boolean;
   autosave?: boolean;
   autoUpdate?: boolean;   // quiet update check at startup (default on)
+  scrollSpeed?: number;   // wheel/touchpad scroll multiplier (default 2 on Linux, 1 elsewhere)
+}
+
+/** CSS pixels per physical inch of the current monitor, or null when unknown. */
+export async function cssPxPerInch(): Promise<number | null> {
+  if (!isTauri) return null;
+  try { const inv = await invoke(); const v = await inv("css_px_per_inch"); return typeof v === "number" ? v : null; } catch { return null; }
 }
 
 export async function loadSettings(): Promise<Settings> {

@@ -200,6 +200,44 @@ fn harden_webview(win: &tauri::WebviewWindow) {
     });
 }
 
+/// CSS pixels per physical inch of the monitor showing the window, from the monitor's
+/// reported physical size. Lets "Actual size" show paper at its real dimensions. None when
+/// the platform cannot tell (then 100% = 96 px per inch, the Word convention).
+#[tauri::command]
+fn css_px_per_inch(window: tauri::WebviewWindow) -> Option<f64> {
+    css_px_per_inch_impl(&window).filter(|v| (40.0..600.0).contains(v))
+}
+
+#[cfg(target_os = "linux")]
+fn css_px_per_inch_impl(win: &tauri::WebviewWindow) -> Option<f64> {
+    use gtk::prelude::*;
+    let gtk_win = win.gtk_window().ok()?;
+    let gdk_win = gtk_win.window()?;
+    let monitor = gtk_win.display().monitor_at_window(&gdk_win)?;
+    let mm = monitor.width_mm() as f64;
+    let px = monitor.geometry().width() as f64; // logical pixels == CSS pixels
+    if mm <= 0.0 || px <= 0.0 { return None; }
+    Some(px / mm * 25.4)
+}
+
+#[cfg(windows)]
+fn css_px_per_inch_impl(win: &tauri::WebviewWindow) -> Option<f64> {
+    use windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, ReleaseDC, HORZRES, HORZSIZE};
+    let scale = win.scale_factor().ok()?;
+    unsafe {
+        let hdc = GetDC(None);
+        if hdc.is_invalid() { return None; }
+        let mm = GetDeviceCaps(Some(hdc), HORZSIZE) as f64;
+        let px = GetDeviceCaps(Some(hdc), HORZRES) as f64; // physical pixels (the app is DPI aware)
+        ReleaseDC(None, hdc);
+        if mm <= 0.0 || px <= 0.0 || scale <= 0.0 { return None; }
+        Some(px / mm * 25.4 / scale)
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn css_px_per_inch_impl(_win: &tauri::WebviewWindow) -> Option<f64> { None }
+
 #[cfg(target_os = "linux")]
 fn harden_webview(win: &tauri::WebviewWindow) {
     use gtk::prelude::*;
@@ -268,7 +306,8 @@ pub fn run() {
             recovery_dir,
             list_files,
             delete_file,
-            file_mtime
+            file_mtime,
+            css_px_per_inch
         ])
         .setup(|app| {
             // The first window is created from tauri.conf.json (hidden); the frontend

@@ -1009,7 +1009,10 @@ function buildMenubar() {
       { label: "Zoom in", key: key("zoominx"), action: () => setZoom(app.zoom + 0.1) },
       { label: "Zoom out", key: key("zoomout"), action: () => setZoom(app.zoom - 0.1) },
       { label: "Zoom 100%", key: key("zoom0"), action: () => setZoom(1) },
+      { label: "Actual size", disabled: actualSizeCache === null, action: () => { actualSizeZoom().then((z) => { if (z) setZoom(z); }); } },
       { label: "Fit page width", action: () => fitWidth() },
+      { label: "Whole page", action: () => fitPage() },
+      { label: "Scroll speed", submenu: SCROLL_SPEEDS.map(([name, f]) => ({ label: `${name} (${f}×)`, checked: scrollSpeed() === f, action: () => { app.settings.scrollSpeed = f; F.saveSettings(app.settings); } })) },
       { sep: true },
       { label: "Dark mode", key: key("theme"), checked: app.theme === "dark", action: () => toggleTheme() },
       { label: "Markdown source", key: key("source"), checked: app.source, disabled: app.kind !== "md" && !app.source, action: () => toggleSourceView() },
@@ -1135,6 +1138,29 @@ function fitWidth() {
   setZoom(avail / pageW);
 }
 
+/** Zoom so one whole page fits the window. */
+function fitPage() {
+  const sect = view().state.doc.attrs.sect as SectProps;
+  const ws = $("workspace");
+  const byW = (ws.clientWidth - 20) / (twipsToPx(sect.pgW) + 48);
+  const byH = (ws.clientHeight - 20) / (twipsToPx(sect.pgH) + 48);
+  setZoom(Math.min(byW, byH));
+}
+
+/** Zoom at which paper appears at its physical size on this monitor (100% is 96 px per inch), or null. */
+let actualSizeCache: number | null | undefined;
+async function actualSizeZoom(): Promise<number | null> {
+  if (actualSizeCache === undefined) { const ppi = await F.cssPxPerInch(); actualSizeCache = ppi ? ppi / 96 : null; }
+  return actualSizeCache;
+}
+
+const SCROLL_SPEEDS: [string, number][] = [["Normal", 1], ["Fast", 1.5], ["Faster", 2], ["Fastest", 3]];
+function scrollSpeed(): number {
+  const v = app.settings.scrollSpeed;
+  if (typeof v === "number" && v > 0) return v;
+  return /linux/i.test(navigator.platform) ? 2 : 1;   // libinput maps finger travel 1:1, which feels slow next to Windows
+}
+
 // ---------------------------------------------------------------------------
 // Global key handling outside the editor & browser-default suppression
 
@@ -1176,7 +1202,13 @@ function installGlobalKeys() {
   // which shows as laggy touchpad scrolling). The webview's own zoom hotkeys are disabled in
   // tauri.conf.json, so there is no default action to prevent.
   $("workspace").addEventListener("wheel", (e) => {
-    if (!e.ctrlKey) return;
+    if (!e.ctrlKey) {
+      // Scroll speed: the browser scrolls the native distance; add the remainder here so the
+      // listener stays passive and native kinetic scrolling keeps working.
+      const f = scrollSpeed();
+      if (f !== 1 && e.deltaMode === 0 && !e.shiftKey) { const ws = e.currentTarget as HTMLElement; ws.scrollTop += e.deltaY * (f - 1); ws.scrollLeft += e.deltaX * (f - 1); }
+      return;
+    }
     // Pinch gestures arrive as ctrl+wheel with small pixel deltas: zoom proportionally and
     // continuously. A real mouse wheel (line deltas or large pixel steps) zooms in 10% steps.
     const pinch = e.deltaMode === 0 && Math.abs(e.deltaY) < 40;
@@ -1213,7 +1245,8 @@ function installGlobalKeys() {
 
 async function boot() {
   app.settings = await F.loadSettings();
-  app.zoom = app.settings.zoom || 1;
+  // First run: show paper at its physical size when the monitor reports its dimensions.
+  app.zoom = app.settings.zoom || Math.max(0.5, Math.min(3, (await actualSizeZoom()) || 1));
   app.mode = app.settings.view || "page";
   app.showMarks = !!app.settings.showMarks;
   app.theme = app.settings.theme || "light";
@@ -1324,7 +1357,7 @@ function devBenchChannel() {
       if (styleEl) styleEl.remove();
       frames.shift();
       const sorted = [...frames].sort((a, b) => a - b);
-      const res = { label: req.label || "", frames: frames.length, avgMs: +(frames.reduce((a, b) => a + b, 0) / frames.length).toFixed(1), p50: +sorted[Math.floor(sorted.length / 2)].toFixed(1), p90: +sorted[Math.floor(sorted.length * 0.9)].toFixed(1), maxMs: +sorted[sorted.length - 1].toFixed(1), scrollHeight: ws.scrollHeight, clientHeight: ws.clientHeight, dpr: devicePixelRatio, ua: navigator.userAgent };
+      const res = { label: req.label || "", frames: frames.length, avgMs: +(frames.reduce((a, b) => a + b, 0) / frames.length).toFixed(1), p50: +sorted[Math.floor(sorted.length / 2)].toFixed(1), p90: +sorted[Math.floor(sorted.length * 0.9)].toFixed(1), maxMs: +sorted[sorted.length - 1].toFixed(1), scrollHeight: ws.scrollHeight, clientHeight: ws.clientHeight, dpr: devicePixelRatio, ppi: await F.cssPxPerInch(), actualZoom: await actualSizeZoom(), zoom: app.zoom, ua: navigator.userAgent };
       await F.writeFile(F.joinPath(dir, "bench.result.json"), new TextEncoder().encode(JSON.stringify(res)));
     } catch (e) { console.warn("bench", e); }
   };

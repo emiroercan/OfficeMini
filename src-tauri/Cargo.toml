@@ -1,6 +1,6 @@
 [package]
 name = "officemini"
-version = "0.2.4"
+version = "0.2.5"
 description = "A small, fast word processor for DOCX and Markdown"
 authors = ["Emir"]
 edition = "2021"
@@ -26,7 +26,7 @@ gtk = "0.18"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
-windows = { version = "0.61", features = ["Win32_Foundation"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi"] }
 
 [profile.release]
 panic = "abort"
