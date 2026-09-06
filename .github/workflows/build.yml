@@ -1,6 +1,6 @@
 name: Release
 
-# Pushing a tag like v0.2.1 builds signed installers for Windows and Linux,
+# Pushing a tag like v0.2.1 builds signed installers for Windows, Linux and macOS,
 # creates the GitHub release and uploads latest.json for the in-app updater.
 on:
   push:
@@ -20,6 +20,11 @@ jobs:
             name: linux
           - os: windows-latest
             name: windows
+          - os: macos-latest
+            name: macos
+            # One universal .app / .dmg for Apple silicon and Intel Macs.
+            args: --target universal-apple-darwin
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +33,8 @@ jobs:
           node-version: 20
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -45,7 +52,8 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "OfficeMini ${{ github.ref_name }}"
-          releaseBody: "See the commit history for changes. Installers: Windows setup .exe / .msi, Fedora .rpm, Debian .deb, AppImage."
+          releaseBody: "See the commit history for changes. Installers: Windows setup .exe / .msi, Fedora .rpm, Debian .deb, AppImage, macOS .dmg (universal; unsigned, see README)."
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
+          args: ${{ matrix.args }}

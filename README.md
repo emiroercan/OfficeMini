@@ -68,6 +68,12 @@ npm run tauri build    # installers in src-tauri/target/release/bundle
 
 Needs the Visual Studio Build Tools with the "Desktop development with C++" workload (MSVC + Windows SDK). WebView2 is part of Windows 11. The build produces an NSIS installer (`.exe`) and an MSI.
 
+### macOS
+
+Needs Xcode command line tools (`xcode-select --install`). `npm run tauri build` produces an `OfficeMini.app` and a `.dmg` under `src-tauri/target/release/bundle` for the Mac it runs on; `npm run tauri build -- --target universal-apple-darwin` (after `rustup target add aarch64-apple-darwin x86_64-apple-darwin`) makes one universal build for Apple silicon and Intel, which is what the release workflow ships.
+
+The releases are only ad-hoc signed (no Apple Developer certificate), so Gatekeeper refuses the downloaded app at first: after copying it to Applications, either right-click the app and choose *Open*, or allow it under System Settings > Privacy & Security ("Open Anyway"), or clear the quarantine flag with `xattr -dr com.apple.quarantine /Applications/OfficeMini.app`. This is needed once; updates installed by the app itself are not quarantined. The app installs a native menu bar with Edit and Window menus (WebKit only accepts Cmd+C/V/X through them); the document menus stay in the window. Trackpad pinch zooms, Cmd replaces Ctrl in every shortcut, and files opened from Finder or with *Open with* land in the front window (or a new one when it holds unsaved work).
+
 ### Fedora Linux
 
 ```bash
@@ -95,7 +101,7 @@ To publish a release, bump the version in `package.json`, `src-tauri/tauri.conf.
 git tag v0.2.1 && git push origin main --tags
 ```
 
-The `Release` workflow builds Windows and Linux installers, signs them with the repository secrets `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, creates the GitHub release and uploads `latest.json` for the updater. The private key lives outside the repository (`~/.tauri/officemini.key` on the build machine); losing it means existing installs can no longer verify new updates, so keep a backup.
+The `Release` workflow builds Windows, Linux and macOS installers, signs them with the repository secrets `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, creates the GitHub release and uploads `latest.json` for the updater. The private key lives outside the repository (`~/.tauri/officemini.key` on the build machine); losing it means existing installs can no longer verify new updates, so keep a backup.
 
 ## Browser development mode
 

@@ -1,8 +1,17 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 static WINDOW_COUNTER: AtomicUsize = AtomicUsize::new(1);
+
+/// Files the OS asked us to open outside argv (macOS Finder / "Open with" deliver an Apple
+/// event). They wait here until a window fetches them with `cli_args` / `take_pending_opens`.
+static PENDING_OPENS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn take_pending() -> Vec<String> {
+    std::mem::take(&mut *PENDING_OPENS.lock().unwrap_or_else(|e| e.into_inner()))
+}
 
 /// Read a file and return its raw bytes (zero JSON overhead).
 #[tauri::command]
@@ -45,15 +54,29 @@ fn file_exists(path: String) -> bool {
     std::path::Path::new(&path).exists()
 }
 
-/// Command-line arguments (file paths to open) for the first window.
+/// Command-line arguments (file paths to open) for the first window, plus any files the OS
+/// handed over by event (macOS) before the window asked.
 #[tauri::command]
 fn cli_args() -> Vec<String> {
-    std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect()
+    let mut args: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect();
+    args.extend(take_pending());
+    args
+}
+
+/// Files delivered by the OS since the last call (see `PENDING_OPENS`); the frontend polls
+/// this when it receives an `open-files` event.
+#[tauri::command]
+fn take_pending_opens() -> Vec<String> {
+    take_pending()
 }
 
 /// Open another document in a new window of this process (fast: no new process).
 #[tauri::command]
 fn open_window(app: AppHandle, path: Option<String>) -> Result<String, String> {
+    create_window(&app, path).map_err(|e| e.to_string())
+}
+
+fn create_window(app: &AppHandle, path: Option<String>) -> tauri::Result<String> {
     let n = WINDOW_COUNTER.fetch_add(1, Ordering::SeqCst);
     let label = format!("doc{}", n);
     let mut url = String::from("index.html");
@@ -61,7 +84,7 @@ fn open_window(app: AppHandle, path: Option<String>) -> Result<String, String> {
         url.push_str("?file=");
         url.push_str(&url_encode(&p));
     }
-    let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url.into()))
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
         .title("OfficeMini")
         .inner_size(1100.0, 820.0)
         .min_inner_size(520.0, 360.0)
@@ -73,7 +96,7 @@ fn open_window(app: AppHandle, path: Option<String>) -> Result<String, String> {
             builder = builder.position((pos.x + 32) as f64, (pos.y + 32) as f64);
         }
     }
-    let win = builder.build().map_err(|e| e.to_string())?;
+    let win = builder.build()?;
     harden_webview(&win);
     Ok(label)
 }
@@ -253,6 +276,77 @@ fn harden_webview(win: &tauri::WebviewWindow) {
 #[cfg(not(any(windows, target_os = "linux")))]
 fn harden_webview(_win: &tauri::WebviewWindow) {}
 
+/// The label of the focused window, or of any window when none has focus.
+fn target_window(app: &AppHandle) -> Option<String> {
+    let wins = app.webview_windows();
+    wins.values()
+        .find(|w| w.is_focused().unwrap_or(false))
+        .or_else(|| wins.values().next())
+        .map(|w| w.label().to_string())
+}
+
+/// macOS needs a native menu bar: WebKit only honours Cmd+C/V/X/A through the standard Edit
+/// items, and the application menu carries Hide/Quit. Undo, Redo and Quit are routed to the
+/// frontend (as `menu` events) so ProseMirror's history and the unsaved-changes prompt stay in
+/// charge; the keyboard shortcuts themselves reach the page first and only fall through to the
+/// menu when the page did not handle them. The document menus live in the page's own menubar.
+#[cfg(target_os = "macos")]
+fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+    let h = app.handle();
+    let app_menu = Submenu::with_items(h, "OfficeMini", true, &[
+        &PredefinedMenuItem::hide(h, None)?,
+        &PredefinedMenuItem::hide_others(h, None)?,
+        &PredefinedMenuItem::show_all(h, None)?,
+        &PredefinedMenuItem::separator(h)?,
+        &MenuItem::with_id(h, "quit", "Quit OfficeMini", true, Some("CmdOrCtrl+Q"))?,
+    ])?;
+    let edit = Submenu::with_items(h, "Edit", true, &[
+        &MenuItem::with_id(h, "undo", "Undo", true, Some("CmdOrCtrl+Z"))?,
+        &MenuItem::with_id(h, "redo", "Redo", true, Some("CmdOrCtrl+Shift+Z"))?,
+        &PredefinedMenuItem::separator(h)?,
+        &PredefinedMenuItem::cut(h, None)?,
+        &PredefinedMenuItem::copy(h, None)?,
+        &PredefinedMenuItem::paste(h, None)?,
+        &PredefinedMenuItem::select_all(h, None)?,
+    ])?;
+    let window = Submenu::with_items(h, "Window", true, &[
+        &PredefinedMenuItem::minimize(h, None)?,
+        &PredefinedMenuItem::maximize(h, None)?,
+        &PredefinedMenuItem::fullscreen(h, None)?,
+        &PredefinedMenuItem::separator(h)?,
+        &PredefinedMenuItem::close_window(h, None)?,
+    ])?;
+    app.set_menu(Menu::with_items(h, &[&app_menu, &edit, &window])?)?;
+    Ok(())
+}
+
+/// Files opened through the OS (macOS `application:openURLs:`): queue them and poke the
+/// focused window, which fetches them with `take_pending_opens`. A window that has not
+/// finished loading picks them up from `cli_args` instead, so nothing is lost either way.
+#[cfg(target_os = "macos")]
+fn handle_opened(app: &AppHandle, urls: Vec<tauri::Url>) {
+    use tauri::Emitter;
+    let paths: Vec<String> = urls
+        .iter()
+        .filter_map(|u| u.to_file_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    if paths.is_empty() {
+        return;
+    }
+    PENDING_OPENS.lock().unwrap_or_else(|e| e.into_inner()).extend(paths);
+    match target_window(app) {
+        Some(label) => {
+            let _ = app.emit_to(label.as_str(), "open-files", ());
+        }
+        None => {
+            // No window left (all closed): give the files a fresh one; it drains the queue.
+            let _ = create_window(app, None);
+        }
+    }
+}
+
 fn url_encode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
@@ -307,7 +401,8 @@ pub fn run() {
             list_files,
             delete_file,
             file_mtime,
-            css_px_per_inch
+            css_px_per_inch,
+            take_pending_opens
         ])
         .setup(|app| {
             // The first window is created from tauri.conf.json (hidden); the frontend
@@ -315,8 +410,27 @@ pub fn run() {
             if let Some(win) = app.get_webview_window("main") {
                 harden_webview(&win);
             }
+            #[cfg(target_os = "macos")]
+            install_macos_menu(app)?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running OfficeMini");
+        .on_menu_event(|app, event| {
+            use tauri::Emitter;
+            let id = event.id().as_ref().to_string();
+            match id.as_str() {
+                "quit" => { let _ = app.emit("menu", id); }   // every window prompts for unsaved changes
+                "undo" | "redo" => {
+                    if let Some(label) = target_window(app) { let _ = app.emit_to(label.as_str(), "menu", id); }
+                }
+                _ => {}
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building OfficeMini")
+        .run(|_app, _event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = _event {
+                handle_opened(_app, urls);
+            }
+        });
 }

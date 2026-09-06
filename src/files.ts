@@ -170,6 +170,19 @@ export async function cliArgs(): Promise<string[]> {
   return [];
 }
 
+/** Files the OS handed to the running app (macOS Finder); paired with the `open-files` event. */
+export async function takePendingOpens(): Promise<string[]> {
+  if (!isTauri) return [];
+  try { const inv = await invoke(); return await inv("take_pending_opens"); } catch { return []; }
+}
+
+/** Listen to an event the backend sends to this window (or to every window). */
+export async function onBackendEvent<T = unknown>(name: string, cb: (payload: T) => void): Promise<void> {
+  const w = await appWindow();
+  if (!w) return;
+  await w.listen<T>(name, (e) => cb(e.payload));
+}
+
 export async function openInNewWindow(path?: string): Promise<void> {
   if (isTauri) { const inv = await invoke(); await inv("open_window", { path: path || null }); return; }
   window.open(location.pathname + (path ? "?file=" + encodeURIComponent(path) : ""), "_blank");

@@ -1215,6 +1215,15 @@ function installGlobalKeys() {
     if (pinch) setZoom(app.zoom * Math.exp(-e.deltaY * 0.01), true);
     else setZoom(app.zoom + (e.deltaY < 0 ? 0.1 : -0.1));
   }, { passive: true });
+  // macOS trackpad pinch: WebKit there reports it as (non-standard) gesture events with a
+  // cumulative scale instead of ctrl+wheel. Zoom relative to the zoom at gesture start.
+  let gestureZoom = 1;
+  $("workspace").addEventListener("gesturestart", (e) => { e.preventDefault(); gestureZoom = app.zoom; });
+  $("workspace").addEventListener("gesturechange", (e) => {
+    e.preventDefault();
+    const scale = (e as unknown as { scale?: number }).scale;
+    if (scale && isFinite(scale)) setZoom(gestureZoom * scale, true);
+  });
   // Middle-click / plain click on the gray area focuses the editor.
   $("workspace").addEventListener("mousedown", (e) => {
     if (e.target === $("workspace") || e.target === $("pagearea") || (e.target as HTMLElement).classList?.contains("page-bg")) {
@@ -1285,6 +1294,20 @@ async function boot() {
   app.toolbar.update(handle.view.state);
   updateStatus();
 
+  // Files the OS opens while we run (macOS Finder / Open with) and the native macOS menu.
+  const openPaths = (paths: string[]) => {
+    for (const p of paths) {
+      if (!app.dirty && (!app.path || app.kind === "new")) openPath(p);
+      else F.openInNewWindow(p);
+    }
+  };
+  await F.onBackendEvent("open-files", async () => openPaths(await F.takePendingOpens()));
+  await F.onBackendEvent<string>("menu", (id) => {
+    if (id === "quit") closeWindowRequest();
+    else if (id === "undo") run(undo);
+    else if (id === "redo") run(redo);
+  });
+
   // Which file to open: ?file= (new windows) or CLI args (first window).
   const params = new URLSearchParams(location.search);
   let file = params.get("file");
@@ -1310,8 +1333,7 @@ async function boot() {
     for (const p of paths) {
       const ext = F.extname(p);
       if (["png", "jpg", "jpeg", "gif", "bmp", "webp", "svg"].includes(ext)) F.readFile(p).then((b) => insertImageBytes(b, ext, F.basename(p)));
-      else if (!app.dirty && (!app.path || app.kind === "new")) openPath(p);
-      else F.openInNewWindow(p);
+      else openPaths([p]);
     }
   }, (over) => $("workspace").classList.toggle("drop-target", over));
 
