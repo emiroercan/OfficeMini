@@ -178,6 +178,18 @@ export function rangeRef(rg: Range): string {
   if (rg.r1 === rg.r2 && rg.c1 === rg.c2) return cellRef(rg.r1, rg.c1);
   return cellRef(rg.r1, rg.c1) + ":" + cellRef(rg.r2, rg.c2);
 }
+/**
+ * Display form of a range: a whole column reads A:A, a whole row 2:5. Excel writes these
+ * in formulas too, and they beat A1:A1048576 anywhere a person has to read them.
+ */
+export function rangeRefShort(rg: Range): string {
+  const allRows = rg.r1 === 0 && rg.r2 >= MAXR - 1;
+  const allCols = rg.c1 === 0 && rg.c2 >= MAXC - 1;
+  if (allRows && !allCols) return colName(rg.c1) + ":" + colName(rg.c2);
+  if (allCols) return (rg.r1 + 1) + ":" + (rg.r2 + 1);
+  return rangeRef(rg);
+}
+
 export function quoteSheet(name: string): string {
   return /^[A-Za-z_][A-Za-z0-9_.]*$/.test(name) ? name : "'" + name.replace(/'/g, "''") + "'";
 }

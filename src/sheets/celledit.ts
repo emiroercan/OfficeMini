@@ -3,7 +3,7 @@
 // insert references while a formula is being typed (Google Sheets behaviour),
 // and function names autocomplete.
 import { Grid } from "./grid";
-import { Range, parseRef, cellRef, rangeRef, quoteSheet, MAXR, MAXC } from "./model";
+import { Range, parseRef, cellRef, rangeRef, rangeRefShort, quoteSheet, MAXR, MAXC } from "./model";
 import { formulaRefs, tokenize } from "./formula/tokens";
 import { FUNCTION_NAMES } from "./formula/engine";
 import { el, showPopup, PopupHandle, closeAllPopups } from "../ui/widgets";
@@ -34,6 +34,27 @@ const FUNC_HELP: Record<string, string> = {
   TODAY: "TODAY()", NOW: "NOW()", DATE: "DATE(year, month, day)", YEAR: "YEAR(date)", MONTH: "MONTH(date)", DAY: "DAY(date)", EDATE: "EDATE(start_date, months)", EOMONTH: "EOMONTH(start_date, months)", DATEDIF: "DATEDIF(start_date, end_date, unit)", NETWORKDAYS: "NETWORKDAYS(start_date, end_date, [holidays])", WEEKDAY: "WEEKDAY(date, [type])",
   UNIQUE: "UNIQUE(range)", SUMPRODUCT: "SUMPRODUCT(array1, [array2, ...])", LET: "LET(name1, value1, ..., expression)", CHOOSE: "CHOOSE(index, choice1, [choice2, ...])",
 };
+
+/**
+ * Finishing "=SUM(A1:A5" gives "=SUM(A1:A5)": every parenthesis left open is closed, and an
+ * unterminated string is terminated first, the way Excel completes a half-typed formula.
+ * Parentheses inside string literals are text, not nesting.
+ */
+export function closeOpenParens(text: string): string {
+  if (!text.startsWith("=")) return text;
+  let depth = 0, inStr = false;
+  for (let i = 1; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (ch === '"') { if (text[i + 1] === '"') i++; else inStr = false; }
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "(") depth++;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+  }
+  return text + (inStr ? '"' : "") + ")".repeat(depth);
+}
 
 export class CellEditor {
   el: HTMLTextAreaElement;
@@ -66,6 +87,7 @@ export class CellEditor {
   }
 
   get text(): string { return this.inFbar ? this.fbar.value : this.el.value; }
+
   private setText(v: string) { this.el.value = v; this.fbar.value = v; this.lastValue = v; }
   private current(): HTMLTextAreaElement { return this.inFbar ? this.fbar : this.el; }
 
@@ -132,7 +154,7 @@ export class CellEditor {
   /** Commit (move = where to go afterwards) or cancel. */
   finish(move: { dr: number; dc: number } | null, commit: boolean) {
     if (!this.active) return;
-    const text = this.text;
+    const text = commit ? closeOpenParens(this.text) : this.text;
     this.active = false;
     this.pointing = null;
     this.closePopup();
@@ -232,7 +254,7 @@ export class CellEditor {
     if (!e.shiftKey) p.anchor = { r, c };
     const rg: Range = { r1: Math.min(p.anchor.r, r), c1: Math.min(p.anchor.c, c), r2: Math.max(p.anchor.r, r), c2: Math.max(p.anchor.c, c) };
     const other = this.host.pointSheetName?.() ?? null;
-    this.setPointedRef((other ? quoteSheet(other) + "!" : "") + rangeRef(rg));
+    this.setPointedRef((other ? quoteSheet(other) + "!" : "") + rangeRefShort(rg));
     g.ensureVisible(r, c);
   }
 
@@ -245,7 +267,7 @@ export class CellEditor {
       const start = m ? ta.selectionStart - m[0].length : ta.selectionStart;
       this.pointing = { start, end: ta.selectionStart, anchor: { r: range.r1, c: range.c1 }, cur: { r: range.r2, c: range.c2 } };
     }
-    this.setPointedRef((sheetName ? quoteSheet(sheetName) + "!" : "") + rangeRef(range));
+    this.setPointedRef((sheetName ? quoteSheet(sheetName) + "!" : "") + rangeRefShort(range));
   }
   /** After a mouse pointing gesture the next typed character continues after the reference. */
   endPointing() { if (this.pointing) { const ta = this.current(); ta.setSelectionRange(this.pointing.end, this.pointing.end); } }

@@ -3,7 +3,7 @@
 // files, recovery and printing. Mirrors the Words shell in main.ts.
 import { Grid, GridEvents, Hit } from "./grid";
 import {
-  Workbook, Sheet, Range, Cell, key, rowOf, colOf, cellRef, rangeRef, parseRef, colName, MAXR, MAXC, newSheet, setColWidth, setRowHeight, pxToChars,
+  Workbook, Sheet, Range, Cell, key, rowOf, colOf, cellRef, rangeRef, rangeRefShort, parseRef, colName, MAXR, MAXC, newSheet, setColWidth, setRowHeight, pxToChars,
   charsToPx, colWidthChars, colHidden, rowHeightPx, mergeAt, inRange, normRange, quoteSheet, isError, Hyperlink, Value,
 } from "./model";
 import { loadXlsx } from "./xlsx-read";
@@ -597,7 +597,7 @@ function updateNameBox() {
   if (isWholeCols(rg) && isWholeRows(rg)) text = "A1:" + colName(MAXC - 1) + MAXR;
   else if (isWholeCols(rg)) text = colName(rg.c1) + ":" + colName(rg.c2);
   else if (isWholeRows(rg)) text = (rg.r1 + 1) + ":" + (rg.r2 + 1);
-  else if (rg.r1 !== rg.r2 || rg.c1 !== rg.c2) text = `${rg.r2 - rg.r1 + 1}R × ${rg.c2 - rg.c1 + 1}C  ${rangeRef(rg)}`;
+  else if (rg.r1 !== rg.r2 || rg.c1 !== rg.c2) text = `${rg.r2 - rg.r1 + 1}R × ${rg.c2 - rg.c1 + 1}C  ${rangeRefShort(rg)}`;
   else text = cellRef(s.active.r, s.active.c);
   namebox.value = text;
 }
@@ -1104,7 +1104,7 @@ async function sortDialog() {
   const col2 = el("select", null, el("option", { value: "-1" }, "(none)"), ...cols.map((x) => el("option", { value: String(x.c) }, x.label)));
   const dir2 = el("select", null, el("option", { value: "asc" }, "A → Z"), el("option", { value: "desc" }, "Z → A"));
   const body = el("div", null,
-    el("p", { style: { color: "var(--ui-muted)", margin: "0 0 8px" } }, `Sort ${rangeRef(rg)}`),
+    el("p", { style: { color: "var(--ui-muted)", margin: "0 0 8px" } }, `Sort ${rangeRefShort(rg)}`),
     el("label", { style: { display: "flex", alignItems: "center", gap: "6px", color: "var(--ui-fg)" } }, headerCb, "Data has a header row"),
     el("div", { class: "grid2", style: { marginTop: "8px" } }, el("label", null, "Sort by"), colSel, el("label", null, "Order"), dirSel, el("label", null, "Then by"), col2, el("label", null, "Order"), dir2));
   showDialog("Sort range", body, [

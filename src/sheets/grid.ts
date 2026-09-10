@@ -33,7 +33,13 @@ export interface Selection { ranges: Range[]; active: { r: number; c: number }; 
 
 interface Colors { paper: string; text: string; grid: string; headerBg: string; headerText: string; headerSel: string; accent: string; selFill: string; frozenLine: string; }
 
-const HEADER_W = 46, HEADER_H = 22, FILL_HANDLE = 6, RESIZE_ZONE = 4;
+const HEADER_W = 46, HEADER_H = 22, FILL_HANDLE = 6, RESIZE_ZONE = 5;
+/**
+ * A sheet with nothing in it is 1000 rows by 26 columns, the way Sheets starts one: the
+ * scrollbars then mean something instead of running to row 1048576. A sheet that holds more
+ * than that is as big as its data, and moving the selection past the edge grows it.
+ */
+const DEFAULT_ROWS = 1000, DEFAULT_COLS = 26;
 /** Smallest filter button we still draw, so tiny header cells keep a visible one. */
 const FILTER_BTN_MIN = 9;
 
@@ -57,7 +63,7 @@ export class Grid {
   private colors!: Colors;
   private fontCache = new Map<string, string>();
   private textCache = new WeakMap<Cell, { key: string; text: string; color: string | null; align: string | null }>();
-  private drag: null | { kind: "select" | "col" | "row" | "resizeCol" | "resizeRow" | "fill" | "move"; start: { r: number; c: number }; index?: number; startPos?: number; startSize?: number; fillTarget?: Range; moveTarget?: Range; moveCopy?: boolean } = null;
+  private drag: null | { kind: "select" | "col" | "row" | "resizeCol" | "resizeRow" | "fill" | "move"; start: { r: number; c: number }; additive?: boolean; index?: number; startPos?: number; startSize?: number; fillTarget?: Range; moveTarget?: Range; moveCopy?: boolean } = null;
   private autoScroll = 0;
   private resizeObserver: ResizeObserver;
   private dpr = 1;
@@ -189,9 +195,9 @@ export class Grid {
   /** Recompute prefix sums; call after any size/visibility change. */
   layout() {
     const s = this.sheet();
-    // keep the extents grown by scrolling (an edit must not snap the view back), reset by setSheet
-    this.ncols = Math.max(this.ncols, Math.max(s.maxCol + 1, 26) + 6);
-    this.nrows = Math.max(this.nrows, Math.max(s.maxRow + 1, 100) + 30);
+    // keep any extent already grown (an edit must not snap the view back), reset by setSheet
+    this.ncols = Math.min(MAXC, Math.max(this.ncols, s.maxCol + 1, DEFAULT_COLS));
+    this.nrows = Math.min(MAXR, Math.max(this.nrows, s.maxRow + 1, DEFAULT_ROWS));
     const z = this.zoom;
     const cx: number[] = [0];
     for (let c = 0; c < this.ncols; c++) cx.push(cx[c] + (colHidden(s, c) ? 0 : Math.round(charsToPx(colWidthChars(s, c)) * z)));
@@ -200,27 +206,23 @@ export class Grid {
     const ry: number[] = [0];
     for (let r = 0; r < this.nrows; r++) ry.push(ry[r] + Math.round(this.rowH(r) * z));
     this.rowY = ry;
-    this.spacer.style.width = (this.colX[this.ncols] + HEADER_W * z + 2000) + "px";
-    this.spacer.style.height = (this.rowY[this.nrows] + HEADER_H * z + 1200) + "px";
+    this.spacer.style.width = (this.colX[this.ncols] + HEADER_W * z) + "px";
+    this.spacer.style.height = (this.rowY[this.nrows] + HEADER_H * z) + "px";
   }
 
-  private growIfNeeded() {
-    const s = this.sheet();
-    const z = this.zoom;
-    const needRows = this.rowIndexAt(this.host.scrollTop + this.host.clientHeight) + 60;
-    const needCols = this.colIndexAt(this.host.scrollLeft + this.host.clientWidth) + 10;
-    if (needRows > this.nrows || needCols > this.ncols) {
-      this.nrows = Math.max(this.nrows, Math.min(MAXR, needRows + 100));
-      this.ncols = Math.max(this.ncols, Math.min(MAXC, needCols + 10));
-      const cx: number[] = [0];
-      for (let c = 0; c < this.ncols; c++) cx.push(cx[c] + (colHidden(s, c) ? 0 : Math.round(charsToPx(colWidthChars(s, c)) * z)));
-      this.colX = cx;
-      const ry: number[] = [0];
-      for (let r = 0; r < this.nrows; r++) ry.push(ry[r] + Math.round(this.rowH(r) * z));
-      this.rowY = ry;
-      this.spacer.style.width = (this.colX[this.ncols] + HEADER_W * z + 2000) + "px";
-      this.spacer.style.height = (this.rowY[this.nrows] + HEADER_H * z + 1200) + "px";
-    }
+  /** Rows and columns the sheet currently reaches; the scroll area is exactly this big. */
+  extent(): { rows: number; cols: number } { return { rows: this.nrows, cols: this.ncols }; }
+
+  /**
+   * Grow the sheet so (r, c) is inside it. Moving the selection past the last row or column
+   * is what adds more - scrolling does not, or the sheet would creep outwards on its own.
+   */
+  ensureExtent(r: number, c: number) {
+    const rows = Math.min(MAXR, Math.max(this.nrows, r + 1));
+    const cols = Math.min(MAXC, Math.max(this.ncols, c + 1));
+    if (rows === this.nrows && cols === this.ncols) return;
+    this.nrows = rows; this.ncols = cols;
+    this.layout();
   }
 
   colWidthPx(c: number): number { return c < this.ncols ? this.colX[c + 1] - this.colX[c] : Math.round(charsToPx(this.sheet().defaultColWidth) * this.zoom); }
@@ -361,6 +363,7 @@ export class Grid {
 
   setActive(r: number, c: number, extend = false) {
     r = Math.max(0, Math.min(MAXR - 1, r)); c = Math.max(0, Math.min(MAXC - 1, c));
+    this.ensureExtent(r, c);
     if (!extend) this.cursorExt = null;
     const merge = mergeAt(this.sheet(), r, c);
     if (!extend) {
@@ -383,6 +386,8 @@ export class Grid {
     this.cursorExt = null;
     this.selection.ranges = ranges.map((rg) => this.expandToMerges(rg));
     if (active) this.selection.active = active; else this.selection.active = { r: ranges[0].r1, c: ranges[0].c1 };
+    // Only the active cell grows the sheet: whole-column ranges run to the last row by design.
+    this.ensureExtent(this.selection.active.r, this.selection.active.c);
     this.selection.anchor = { ...this.selection.active };
     this.schedule();
     this.ev.onSelect();
@@ -411,6 +416,10 @@ export class Grid {
     const base = extend ? this.selection.ranges[0] : null;
     let { r, c } = extend ? this.extendCursor() : this.selection.active;
     const startR = r, startC = c;
+    // The sheet ends at its extent. A jump (Ctrl+arrow) stops on the last row/column;
+    // a single step may land one past it, and setActive then grows the sheet by that much.
+    const maxR = Math.min(MAXR - 1, jump ? this.nrows - 1 : this.nrows);
+    const maxC = Math.min(MAXC - 1, jump ? this.ncols - 1 : this.ncols);
     if (!extend) {
       // step over merged cells
       const m = mergeAt(s, r, c);
@@ -419,22 +428,23 @@ export class Grid {
     if (jump) {
       const has = (rr: number, cc: number) => { const cell = s.cells.get(key(rr, cc)); return !!cell && cell.v !== null && cell.v !== ""; };
       const step = () => { r += dr; c += dc; };
-      const inBounds = () => r >= 0 && c >= 0 && r < MAXR && c < MAXC;
+      const inBounds = () => r >= 0 && c >= 0 && r <= maxR && c <= maxC;
       const cur = has(r, c);
       const r0 = r, c0 = c;
       const nr = r + dr, nc = c + dc;
       if (cur && nr >= 0 && nc >= 0 && has(nr, nc)) { while (inBounds() && has(r + dr, c + dc)) step(); }
-      else { step(); while (inBounds() && !has(r, c)) { if ((dr > 0 && r >= Math.max(s.maxRow, 0)) || (dc > 0 && c >= Math.max(s.maxCol, 0)) || (dr < 0 && r <= 0) || (dc < 0 && c <= 0)) break; step(); } if (!inBounds()) { r = Math.max(0, Math.min(MAXR - 1, r)); c = Math.max(0, Math.min(MAXC - 1, c)); } if (!has(r, c)) { if (dr > 0) r = r0 >= Math.max(s.maxRow, 0) ? MAXR - 1 : Math.max(s.maxRow, 0); if (dc > 0) c = c0 >= Math.max(s.maxCol, 0) ? MAXC - 1 : Math.max(s.maxCol, 0); if (dr < 0) r = 0; if (dc < 0) c = 0; } }
+      else { step(); while (inBounds() && !has(r, c)) { if ((dr > 0 && r >= Math.max(s.maxRow, 0)) || (dc > 0 && c >= Math.max(s.maxCol, 0)) || (dr < 0 && r <= 0) || (dc < 0 && c <= 0)) break; step(); } if (!inBounds()) { r = Math.max(0, Math.min(maxR, r)); c = Math.max(0, Math.min(maxC, c)); } if (!has(r, c)) { if (dr > 0) r = r0 >= Math.max(s.maxRow, 0) ? maxR : Math.max(s.maxRow, 0); if (dc > 0) c = c0 >= Math.max(s.maxCol, 0) ? maxC : Math.max(s.maxCol, 0); if (dr < 0) r = 0; if (dc < 0) c = 0; } }
     } else { r += dr; c += dc; }
-    r = Math.max(0, Math.min(MAXR - 1, r)); c = Math.max(0, Math.min(MAXC - 1, c));
+    r = Math.max(0, Math.min(maxR, r)); c = Math.max(0, Math.min(maxC, c));
     // skip hidden rows/cols
     let guard = 0;
-    while (guard++ < MAXR && ((dr && this.rowH(r) === 0) || (dc && colHidden(s, c)))) { r += dr || 0; c += dc || 0; if (r < 0 || c < 0 || r >= MAXR || c >= MAXC) { r = Math.max(0, Math.min(MAXR - 1, r)); c = Math.max(0, Math.min(MAXC - 1, c)); break; } }
+    while (guard++ < maxR + 1 && ((dr && this.rowH(r) === 0) || (dc && colHidden(s, c)))) { r += dr || 0; c += dc || 0; if (r < 0 || c < 0 || r > maxR || c > maxC) { r = Math.max(0, Math.min(maxR, r)); c = Math.max(0, Math.min(maxC, c)); break; } }
     // no visible row/column in that direction: stay put instead of landing on a hidden one
     if ((dr && this.rowH(r) === 0) || (dc && colHidden(s, c))) { r = startR; c = startC; }
     if (extend && base) { this.selection.ranges = [this.expandToMerges(normRange(this.selection.anchor, { r, c }))]; this.cursorExt = { r, c }; this.ensureVisible(r, c); this.schedule(); this.ev.onSelect(); }
     else this.setActive(r, c);
   }
+  private lastResize: { kind: "col" | "row"; index: number; at: number } | null = null;
   private cursorExt: { r: number; c: number } | null = null;
   private extendCursor() { return this.cursorExt && this.selection.ranges.length ? this.cursorExt : { ...this.selection.active }; }
 
@@ -448,6 +458,27 @@ export class Grid {
   selectRows(r1: number, r2: number) { this.setRanges([{ r1: Math.min(r1, r2), c1: 0, r2: Math.max(r1, r2), c2: MAXC - 1 }], { r: Math.min(r1, r2), c: this.selection.active.c }); }
   selectCols(c1: number, c2: number) { this.setRanges([{ r1: 0, c1: Math.min(c1, c2), r2: MAXR - 1, c2: Math.max(c1, c2) }], { r: this.selection.active.r, c: Math.min(c1, c2) }); }
 
+  /** Ctrl+click / Ctrl+drag on the headers: another column or row alongside what is selected. */
+  addCols(c1: number, c2: number, replaceLast = false) {
+    const rg = { r1: 0, c1: Math.min(c1, c2), r2: MAXR - 1, c2: Math.max(c1, c2) };
+    if (replaceLast && this.selection.ranges.length) this.selection.ranges[this.selection.ranges.length - 1] = rg;
+    else this.selection.ranges.push(rg);
+    this.selection.active = { r: this.selection.active.r, c: rg.c1 };
+    this.selection.anchor = { r: 0, c: rg.c1 };
+    this.schedule();
+    this.ev.onSelect();
+  }
+
+  addRows(r1: number, r2: number, replaceLast = false) {
+    const rg = { r1: Math.min(r1, r2), c1: 0, r2: Math.max(r1, r2), c2: MAXC - 1 };
+    if (replaceLast && this.selection.ranges.length) this.selection.ranges[this.selection.ranges.length - 1] = rg;
+    else this.selection.ranges.push(rg);
+    this.selection.active = { r: rg.r1, c: this.selection.active.c };
+    this.selection.anchor = { r: rg.r1, c: 0 };
+    this.schedule();
+    this.ev.onSelect();
+  }
+
   // ---- mouse -------------------------------------------------------------------
 
   private onMouseDown(e: MouseEvent) {
@@ -458,14 +489,18 @@ export class Grid {
     const shift = e.shiftKey, ctrl = e.ctrlKey || e.metaKey;
     switch (hit.type) {
       case "corner": this.selectAll(); return;
-      case "colResize": this.drag = { kind: "resizeCol", start: { r: 0, c: hit.c }, index: hit.c, startPos: e.clientX, startSize: this.colWidthPx(hit.c) }; e.preventDefault(); return;
-      case "rowResize": this.drag = { kind: "resizeRow", start: { r: hit.r, c: 0 }, index: hit.r, startPos: e.clientY, startSize: this.rowHeightPxZ(hit.r) }; e.preventDefault(); return;
+      case "colResize": this.lastResize = { kind: "col", index: hit.c, at: Date.now() }; this.drag = { kind: "resizeCol", start: { r: 0, c: hit.c }, index: hit.c, startPos: e.clientX, startSize: this.colWidthPx(hit.c) }; e.preventDefault(); return;
+      case "rowResize": this.lastResize = { kind: "row", index: hit.r, at: Date.now() }; this.drag = { kind: "resizeRow", start: { r: hit.r, c: 0 }, index: hit.r, startPos: e.clientY, startSize: this.rowHeightPxZ(hit.r) }; e.preventDefault(); return;
       case "colHeader":
-        if (shift) this.selectCols(this.selection.anchor.c, hit.c); else { this.selectCols(hit.c, hit.c); this.selection.anchor = { r: 0, c: hit.c }; }
-        this.drag = { kind: "col", start: { r: 0, c: hit.c } }; e.preventDefault(); return;
+        if (ctrl && !shift) this.addCols(hit.c, hit.c);
+        else if (shift) this.selectCols(this.selection.anchor.c, hit.c);
+        else { this.selectCols(hit.c, hit.c); this.selection.anchor = { r: 0, c: hit.c }; }
+        this.drag = { kind: "col", start: { r: 0, c: hit.c }, additive: ctrl && !shift }; e.preventDefault(); return;
       case "rowHeader":
-        if (shift) this.selectRows(this.selection.anchor.r, hit.r); else { this.selectRows(hit.r, hit.r); this.selection.anchor = { r: hit.r, c: 0 }; }
-        this.drag = { kind: "row", start: { r: hit.r, c: 0 } }; e.preventDefault(); return;
+        if (ctrl && !shift) this.addRows(hit.r, hit.r);
+        else if (shift) this.selectRows(this.selection.anchor.r, hit.r);
+        else { this.selectRows(hit.r, hit.r); this.selection.anchor = { r: hit.r, c: 0 }; }
+        this.drag = { kind: "row", start: { r: hit.r, c: 0 }, additive: ctrl && !shift }; e.preventDefault(); return;
       case "fillHandle": this.drag = { kind: "fill", start: { ...this.selection.active }, fillTarget: { ...this.selection.ranges[0] } }; e.preventDefault(); return;
       case "filterBtn": { const cr = this.cellRect(hit.r, hit.c); const br = this.canvas.getBoundingClientRect(); this.ev.onFilterButton(hit.c, hit.r, br.left + cr.x, br.top + cr.y + cr.h); return; }
       case "cell": {
@@ -543,8 +578,8 @@ export class Grid {
       this.selection.ranges[last] = rg;
       this.cursorExt = { r, c };
       this.schedule(); this.ev.onSelect();
-    } else if (d.kind === "col") { this.selectCols(d.start.c, c); }
-    else if (d.kind === "row") { this.selectRows(d.start.r, r); }
+    } else if (d.kind === "col") { if (d.additive) this.addCols(d.start.c, c, true); else this.selectCols(d.start.c, c); }
+    else if (d.kind === "row") { if (d.additive) this.addRows(d.start.r, r, true); else this.selectRows(d.start.r, r); }
     else if (d.kind === "fill") {
       const src = this.selection.ranges[0];
       // extend vertically or horizontally, whichever is dominant
@@ -625,6 +660,13 @@ export class Grid {
     const hit = this.hitTest(e);
     if (hit.type === "colResize") { this.ev.onAutoFit("col", hit.c); return; }
     if (hit.type === "rowResize") { this.ev.onAutoFit("row", hit.r); return; }
+    // The pointer can drift a pixel or two off the edge between the two clicks; the press
+    // that started this double-click knew which edge it was on, so trust that instead.
+    if (this.lastResize && Date.now() - this.lastResize.at < 800) {
+      this.ev.onAutoFit(this.lastResize.kind, this.lastResize.index);
+      this.lastResize = null;
+      return;
+    }
     if (hit.type === "cell") { this.setActive(hit.r, hit.c); this.ev.onEdit(null); }
   }
 
@@ -672,7 +714,7 @@ export class Grid {
     const ctx = this.ctx;
     const z = this.zoom, dpr = this.dpr;
     if (!this.canvas.width) this.resizeCanvas();
-    this.growIfNeeded();
+
     const W = this.host.clientWidth, H = this.host.clientHeight;
     const hw = HEADER_W * z, hh = HEADER_H * z;
     const st = this.host.scrollTop, sl = this.host.scrollLeft;
