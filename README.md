@@ -1,6 +1,24 @@
 # OfficeMini
 
-A small, fast word processor for `.docx` and Markdown files. Built with Tauri 2 (Rust shell, system webview) and ProseMirror. Opens in well under a second, keeps every part of a Word file it does not understand exactly as it was, and prints what you see on screen.
+A small, fast word processor for `.docx` and Markdown files, plus a spreadsheet editor for `.xlsx` and CSV files. Built with Tauri 2 (Rust shell, system webview) and ProseMirror. Opens in well under a second, keeps every part of a Word or Excel file it does not understand exactly as it was, and prints what you see on screen.
+
+## Sheets (.xlsx / .csv)
+
+One binary, two editors: opening a spreadsheet starts the Sheets editor, which shares the menus, toolbar, dark mode, start screen, recovery copies and updater with the word processor.
+
+- Opens `.xlsx`, `.xlsm`, `.csv`, `.tsv` (UTF-8, UTF-16 and Windows-1254 Turkish CSVs are detected, so are `;` and tab delimiters); saves `.xlsx` and `.csv`. A 45 000-cell workbook opens in about 100 ms, a 9 MB CSV with 800 000 cells in about 1.5 s.
+- Canvas grid with frozen panes; the header row is frozen by default when a file has no frozen rows (view-only, nothing is written unless you freeze it yourself). Freeze any number of rows and columns from the View menu, the ❄ toolbar button or the row/column header menus.
+- Google Sheets controls: Enter or F2 edits, typing replaces, Enter/Tab commit and move (Enter returns to the column where a Tab run started), Shift+Enter moves up, Esc cancels, Alt+Enter inserts a line break, Delete clears, arrow keys and Ctrl+arrows jump across data, Ctrl+A selects the data block then the sheet, Ctrl+Space / Shift+Space select columns / rows, double-click a column edge to fit it.
+- Formulas: `=` starts a formula; while typing, clicking or arrowing over cells inserts references, references are colour-coded on the grid, F4 cycles `$` anchors, function names autocomplete with signatures, and the status bar shows the result live. About 130 functions with Excel semantics: SUM/AVERAGE/COUNT/MIN/MAX, SUBTOTAL (respects filtered rows), IF/IFS/IFERROR/SWITCH/AND/OR, SUMIF(S)/COUNTIF(S)/AVERAGEIF, XLOOKUP/VLOOKUP/HLOOKUP/INDEX/MATCH/OFFSET/INDIRECT, CONCAT/TEXTJOIN/LEFT/RIGHT/MID/LEN/TRIM/SUBSTITUTE/TEXT/VALUE/SPLIT, ROUND family, DATE/TODAY/NOW/EDATE/EOMONTH/DATEDIF/NETWORKDAYS/WORKDAY (with holidays), UNIQUE, SUMPRODUCT and array arithmetic such as `SUMPRODUCT((A:A="x")*(B:B))`, LET, SEQUENCE, plus Turkish names (TOPLA, EĞER, DÜŞEYARA, ÇAPRAZARA…). Both `,` and `;` argument separators work; whole-row (`2:2`) and whole-column (`B:B`) references and unquoted sheet names (`Data!A1`) are understood. Unknown functions keep the value cached in the file, and Excel recalculates on open.
+- Copy and paste behave like Google Sheets: relative references shift on copy and stay on cut, pasting into a larger selection tiles the clip, `Ctrl+Shift+V` pastes values only, the Edit menu has formats-only, formulas-only and transposed paste. TSV/HTML from other programs pastes with type detection; copies go out as tab-separated text and an HTML table. Drag the selection border to move cells (Ctrl to copy), drag the fill handle for series (numbers, dates, month and day names, "Item 1", formulas).
+- Formatting: number format presets (numbers, percent, currency ₺ $ € £, dates in Turkish/European/US/ISO order, time, duration, accounting) and custom Excel format codes with live preview, decimal +/- buttons, font, size, bold/italic/underline/strikethrough, text and fill colour, borders, alignment, wrap, indent, merge. Ctrl+Shift+1..6 apply number, time, date, currency, percent and scientific formats like Excel.
+- Number locale switch in the status bar (TR / US / EU / UK): decides how typed numbers and dates are read (`1.234,56` vs `1,234.56`, `09.09.2026` vs `9/9/2026`), how `General` numbers are shown, the currency button and month/day names. Typing `15%`, `₺1.234,56`, `12,5`, `9 Eylül 2026` or `14:30` picks a matching format automatically.
+- Data: sort A→Z / Z→A / two-level sort dialog with header detection, Excel-style filters (funnel button in the header row, searchable unique-value list with counts, blanks), remove duplicates, trim whitespace, pivot tables (rows, second row field, columns, two values with SUM/COUNT/COUNTA/AVERAGE/MIN/MAX, filter, totals; written to a new sheet and refreshable), insert/delete/hide rows and columns with formula references adjusted across sheets, column width and row height dialogs, autofit.
+- Sheet tabs: add, rename (double-click), duplicate, delete, reorder by dragging, tab colour, hide/unhide, Ctrl+PageUp/PageDown to switch.
+- Find and replace across the sheet or the workbook, with match case, entire cell, regex, search in formulas, Turkish-aware case folding.
+- Printing: whole sheet or selection, portrait/landscape, A4/Letter, fit to width, gridlines, row/column headers, frozen rows repeated on every page.
+- Round trip: only the sheets you changed are regenerated; charts, drawings, images, comments, conditional formatting, data validation, pivot caches, tables, print settings and every other part are written back byte-for-byte. Shared strings and styles are extended, never rewritten from scratch.
+- `.xlsx` and `.csv` files get their own icons in Explorer after installation; Ctrl+/ lists every shortcut.
 
 ## What it does
 
@@ -85,7 +103,7 @@ NO_STRIP=true npm run tauri build
 
 `NO_STRIP=true` is needed on current Fedora: the `strip` bundled inside linuxdeploy predates the `.relr.dyn` relocation sections that Fedora's libraries use, and the AppImage step fails without it. The RPM and DEB are unaffected. The "public key found, but no private key" message at the end only concerns the updater signature and can be ignored for local builds.
 
-The build produces an `.rpm`, a `.deb` and an `AppImage` under `src-tauri/target/release/bundle`. Install the RPM with `sudo dnf install ./OfficeMini-*.rpm`; it registers `.docx` and `.md` file associations.
+The build produces an `.rpm`, a `.deb` and an `AppImage` under `src-tauri/target/release/bundle`. Install the RPM with `sudo dnf install ./OfficeMini-*.rpm`; it registers `.docx`, `.md`, `.xlsx` and `.csv` file associations.
 
 If scrolling and typing feel like they run at half speed on Linux, check the power profile: when the system reports the *power-saver* profile (power-profiles-daemon or tuned-ppd, also on AC power), WebKitGTK caps every page at 30 frames per second and coarsens timers, and the app has no way to opt out. Switch to *Balanced* in the KDE/GNOME power menu, or run `powerprofilesctl set balanced` (or `tuned-adm profile balanced`), and the editor runs at 60 fps again.
 
@@ -98,14 +116,14 @@ Installed copies check GitHub Releases quietly a few seconds after start (at mos
 To publish a release, bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, commit, then tag and push:
 
 ```bash
-git tag v0.2.1 && git push origin main --tags
+git tag v0.3.0 && git push origin main --tags
 ```
 
 The `Release` workflow builds Windows, Linux and macOS installers, signs them with the repository secrets `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, creates the GitHub release and uploads `latest.json` for the updater. The private key lives outside the repository (`~/.tauri/officemini.key` on the build machine); losing it means existing installs can no longer verify new updates, so keep a backup.
 
 ## Browser development mode
 
-`npm run dev` and open `http://localhost:1420/?file=/samples/<name>.docx`. In this mode "Save" posts the file to `samples/out/` through a dev-only endpoint, which is handy for round-trip testing with LibreOffice (`soffice --headless --convert-to pdf`).
+`npm run dev` and open `http://localhost:1420/?file=/samples/<name>.docx` (or `.xlsx`/`.csv` for the Sheets editor, `?file=new:xlsx` for a blank workbook). In this mode "Save" posts the file to `samples/out/` through a dev-only endpoint, which is handy for round-trip testing with LibreOffice (`soffice --headless --convert-to pdf`). `window.om` exposes the running editor for scripting.
 
 ## Known limitations
 

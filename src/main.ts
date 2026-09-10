@@ -106,6 +106,13 @@ function installDocument(loaded: LoadedDoc, doc: PMNode, path: string | null, ki
 interface RecoveryEntry { id: string; path: string | null; name: string; file: string; savedAt: number; kind: "docx" | "md"; }
 
 function fileKind(path: string): "docx" | "md" { return F.extname(path) === "docx" ? "docx" : "md"; }
+function iconFor(path: string): { cls: string; letter: string } {
+  const ext = F.extname(path);
+  if (ext === "docx") return { cls: "docx", letter: "W" };
+  if (ext === "csv" || ext === "tsv") return { cls: "csv", letter: "C" };
+  if (SHEET_EXT.includes(ext)) return { cls: "xlsx", letter: "S" };
+  return { cls: "md", letter: "M" };
+}
 
 async function buildWelcome(recovered: RecoveryEntry[]) {
   const w = $("welcome");
@@ -115,9 +122,11 @@ async function buildWelcome(recovered: RecoveryEntry[]) {
   const actions = el("div", { class: "welcome-actions" });
   const newBtn = el("button", { class: "primary" }, icon("new"), "New document");
   newBtn.addEventListener("click", () => { hideWelcome(); view().focus(); });
+  const newSheetBtn = el("button", null, icon("table"), "New spreadsheet");
+  newSheetBtn.addEventListener("click", () => { location.search = "?file=new%3Axlsx"; });
   const openBtn = el("button", null, icon("open"), "Open…");
   openBtn.addEventListener("click", () => openFile());
-  actions.append(newBtn, openBtn);
+  actions.append(newBtn, newSheetBtn, openBtn);
   card.append(actions);
   if (recovered.length) {
     const box = el("div", { class: "welcome-recovery" });
@@ -142,7 +151,8 @@ async function buildWelcome(recovered: RecoveryEntry[]) {
     for (const p of recent) {
       const exists = F.isTauri ? await F.fileExists(p) : true;
       const item = el("div", { class: "recent-item" + (exists ? "" : " missing"), title: p });
-      const ic = el("span", { class: "ri-icon " + fileKind(p) }, fileKind(p) === "docx" ? "W" : "M");
+      const icf = iconFor(p);
+      const ic = el("span", { class: "ri-icon " + icf.cls }, icf.letter);
       const name = el("span", { class: "ri-name" }, F.basename(p));
       const dir = el("span", { class: "ri-path" }, F.dirname(p));
       const x = el("span", { class: "ri-x", title: "Remove from list" }, "✕");
@@ -220,6 +230,7 @@ async function findRecoveries(): Promise<RecoveryEntry[]> {
     if (!f.name.endsWith(".json")) continue;
     try {
       const meta = JSON.parse(await F.readTextFile(f.path));
+      if (meta.kind === "xlsx" || meta.kind === "csv") continue; // Sheets recoveries are listed by the Sheets editor
       const id = f.name.slice(0, -5);
       const data = files.find((x) => x.name === id + "." + meta.kind);
       if (!data) { await F.deleteFile(f.path); continue; }
@@ -258,7 +269,16 @@ async function offerRecoveryFor(path: string) {
   ]);
 }
 
+const SHEET_EXT = ["xlsx", "xlsm", "xltx", "csv", "tsv"];
+
 async function openPath(path: string) {
+  const ext0 = F.extname(path);
+  if (SHEET_EXT.includes(ext0)) {
+    // Spreadsheets belong to the Sheets editor: reuse this window when it holds nothing, else open a new one.
+    if (!app.dirty && (!app.path || app.kind === "new")) location.search = "?file=" + encodeURIComponent(path);
+    else F.openInNewWindow(path);
+    return;
+  }
   const t0 = performance.now();
   app.loading = true;
   try {
@@ -975,6 +995,7 @@ function buildMenubar() {
   const menus: { title: string; alt: string; items: () => MenuItem[] }[] = [
     { title: "File", alt: "f", items: () => [
       { label: "New", key: key("new"), action: () => newDocument() },
+      { label: "New spreadsheet (Sheets)", action: () => F.openInNewWindow("new:xlsx") },
       { label: "New window", action: () => F.openInNewWindow() },
       { label: "Open…", key: key("open"), action: () => openFile() },
       { label: "Open recent", submenu: (app.settings.recent || []).length ? (app.settings.recent || []).map((p) => ({ label: F.basename(p), action: () => (!app.dirty && (!app.path || app.kind !== "new") ? openPath(p) : F.openInNewWindow(p)) })) : [{ label: "(empty)", disabled: true }] },
@@ -1311,10 +1332,12 @@ async function boot() {
   // Which file to open: ?file= (new windows) or CLI args (first window).
   const params = new URLSearchParams(location.search);
   let file = params.get("file");
-  if (!file) { const args = await F.cliArgs(); if (args.length) { file = args[0]; for (const extra of args.slice(1)) F.openInNewWindow(extra); } }
+  const isNew = params.has("new") || (file && file.startsWith("new:"));
+  if (isNew) file = null;
+  else if (!file) { const args = await F.cliArgs(); if (args.length) { file = args[0]; for (const extra of args.slice(1)) F.openInNewWindow(extra); } }
   setSmartTyping(app.settings.smartQuotes !== false);
   if (file) await openPath(file);
-  else {
+  else if (!isNew) {
     // No document requested: show the welcome screen with recent files and any recovered copies.
     const recovered = await findRecoveries();
     await buildWelcome(recovered);

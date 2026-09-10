@@ -1,60 +1,12 @@
 // Modal dialogs (all keyboard friendly: Enter = OK, Esc = cancel).
-import { el, closeAllPopups } from "./widgets";
+import { el } from "./widgets";
 import { Shortcut, keyLabel, EXTRA_HELP } from "../editor/keymap";
 import { SectProps } from "../schema";
 import { twipsToPt, ptToTwips } from "../docx/units";
 
-export interface DialogButton { label: string; primary?: boolean; action?: () => boolean | void; }
-
-let current: HTMLElement | null = null;
-
-export function showDialog(title: string, body: HTMLElement, buttons: DialogButton[], opts: { onClose?: () => void; width?: string } = {}): () => void {
-  closeAllPopups();
-  closeDialog();
-  const overlay = document.getElementById("overlay")!;
-  const dlg = el("div", { class: "dialog", role: "dialog", "aria-label": title }, el("h2", null, title), el("div", { class: "body" }, body));
-  if (opts.width) dlg.style.width = opts.width;
-  const btnRow = el("div", { class: "buttons" });
-  const close = () => { if (current !== dlg) return; overlay.classList.remove("show"); overlay.innerHTML = ""; current = null; document.removeEventListener("keydown", onKey, true); opts.onClose?.(); };
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
-    else if (e.key === "Enter" && !(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLButtonElement)) {
-      const primary = buttons.find((b) => b.primary);
-      if (primary) { e.preventDefault(); e.stopPropagation(); if (primary.action?.() !== false) close(); }
-    }
-  };
-  for (const b of buttons) {
-    const be = el("button", { type: "button", class: b.primary ? "primary" : "" }, b.label);
-    be.addEventListener("click", () => { if (b.action?.() !== false) close(); });
-    btnRow.appendChild(be);
-  }
-  dlg.appendChild(btnRow);
-  overlay.innerHTML = "";
-  overlay.appendChild(dlg);
-  overlay.classList.add("show");
-  overlay.onmousedown = (e) => { if (e.target === overlay) close(); };
-  current = dlg;
-  document.addEventListener("keydown", onKey, true);
-  setTimeout(() => { const f = dlg.querySelector<HTMLElement>("input, select, textarea, button.primary"); f?.focus(); if (f instanceof HTMLInputElement) f.select(); }, 0);
-  return close;
-}
-
-export function closeDialog() {
-  if (!current) return;
-  const overlay = document.getElementById("overlay")!;
-  overlay.classList.remove("show"); overlay.innerHTML = ""; current = null;
-}
-
-export function promptDialog(title: string, label: string, value = "", placeholder = ""): Promise<string | null> {
-  return new Promise((resolve) => {
-    const input = el("input", { type: "text", value, placeholder, style: { width: "100%" } });
-    let done = false;
-    showDialog(title, el("div", null, el("label", null, label), input), [
-      { label: "Cancel" },
-      { label: "OK", primary: true, action: () => { done = true; resolve(input.value); } },
-    ], { onClose: () => { if (!done) resolve(null); } });
-  });
-}
+export { showDialog, closeDialog, promptDialog } from "./dialog-core";
+export type { DialogButton } from "./dialog-core";
+import { showDialog } from "./dialog-core";
 
 export function linkDialog(href: string, text: string, hasSelection: boolean): Promise<{ href: string; text: string } | null> {
   return new Promise((resolve) => {

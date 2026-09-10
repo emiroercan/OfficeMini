@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OfficeMini",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "identifier": "com.fropie.officemini",
   "plugins": {
     "updater": {
@@ -49,8 +49,8 @@
       "icons/icon.ico"
     ],
     "category": "Productivity",
-    "shortDescription": "Fast DOCX and Markdown editor",
-    "longDescription": "OfficeMini opens, edits and prints Word documents and Markdown files. Small, fast, no bloat.",
+    "shortDescription": "Fast DOCX, Markdown and XLSX editor",
+    "longDescription": "OfficeMini opens, edits and prints Word documents, Markdown files, Excel workbooks and CSV files. Small, fast, no bloat.",
     "fileAssociations": [
       {
         "ext": ["docx"],
@@ -65,9 +65,23 @@
         "description": "Markdown text",
         "role": "Editor",
         "mimeType": "text/markdown"
+      },
+      {
+        "ext": ["xlsx", "xlsm"],
+        "name": "Excel Workbook",
+        "description": "Microsoft Excel workbook",
+        "role": "Editor",
+        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      },
+      {
+        "ext": ["csv", "tsv"],
+        "name": "CSV Table",
+        "description": "Comma separated values",
+        "role": "Editor",
+        "mimeType": "text/csv"
       }
     ],
-    "resources": ["icons/md.ico", "icons/docx.ico"],
+    "resources": ["icons/md.ico", "icons/docx.ico", "icons/xlsx.ico", "icons/csv.ico"],
     "windows": {
       "nsis": {
         "installMode": "currentUser",

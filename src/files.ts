@@ -15,9 +15,10 @@ async function invoke(): Promise<Invoke> {
 
 export interface FileFilter { name: string; extensions: string[]; }
 export const DOC_FILTERS: FileFilter[] = [
-  { name: "Documents", extensions: ["docx", "md", "markdown", "txt"] },
+  { name: "Documents and spreadsheets", extensions: ["docx", "md", "markdown", "txt", "xlsx", "xlsm", "csv", "tsv"] },
   { name: "Word Document", extensions: ["docx"] },
   { name: "Markdown", extensions: ["md", "markdown"] },
+  { name: "Spreadsheets", extensions: ["xlsx", "xlsm", "csv", "tsv"] },
   { name: "All files", extensions: ["*"] },
 ];
 
@@ -204,6 +205,9 @@ export interface Settings {
   autosave?: boolean;
   autoUpdate?: boolean;   // quiet update check at startup (default on)
   scrollSpeed?: number;   // wheel/touchpad scroll multiplier (default 2 on Linux, 1 elsewhere)
+  sheetZoom?: number;     // Sheets editor zoom
+  locale?: string;        // Sheets number/date locale: tr | us | eu | uk
+  sheetFind?: { caseSensitive?: boolean; wholeCell?: boolean; regex?: boolean; formulas?: boolean; allSheets?: boolean };
 }
 
 /** CSS pixels per physical inch of the current monitor, or null when unknown. */
