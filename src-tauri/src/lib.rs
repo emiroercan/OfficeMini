@@ -71,7 +71,12 @@ fn take_pending_opens() -> Vec<String> {
 }
 
 /// Open another document in a new window of this process (fast: no new process).
-#[tauri::command]
+///
+/// `async` is load-bearing: a plain command runs on the main thread, and building a webview
+/// there blocks the event loop that WebView2 needs to finish creating the new webview. The
+/// call never returns, and with the loop dead the whole app stops answering - no more file
+/// dialogs, no saving, no closing the window. Off the main thread the loop keeps running.
+#[tauri::command(async)]
 fn open_window(app: AppHandle, path: Option<String>) -> Result<String, String> {
     create_window(&app, path).map_err(|e| e.to_string())
 }

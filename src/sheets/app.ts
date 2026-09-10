@@ -19,7 +19,7 @@ import { dataBlock, looksLikeHeader, applyFilters, filterState, clearFilterState
 import { printDialog, printSheet } from "./print";
 import { pivotDialog, computePivot, pivotDefs, PivotDef } from "./pivot";
 import { setDarkMode } from "../docx/props";
-import { el, showMenu, MenuItem, tooltip, closeAllPopups, icon, showPopup } from "../ui/widgets";
+import { el, showMenu, MenuItem, tooltip, closeAllPopups, icon, showPopup, showNotice } from "../ui/widgets";
 import { showDialog, promptDialog, closeDialog, dialogOpen } from "../ui/dialog-core";
 import { checkForUpdates } from "../updater";
 import * as F from "../files";
@@ -288,7 +288,39 @@ async function confirmDiscard(): Promise<boolean> {
   });
 }
 
-async function closeWindowRequest() { if (await confirmDiscard()) F.closeWindow(); }
+/**
+ * Closing asks nothing: a recovery copy is written and the window goes (see the same
+ * comment in main.ts). Cancel or Esc keeps the window; after CLOSE_COPY_TIMEOUT it
+ * closes whether the copy finished or not.
+ */
+const CLOSE_COPY_TIMEOUT = 5000;
+let closePending = false;
+
+async function requestClose(): Promise<boolean> {
+  if (!app.dirty) return true;
+  if (!F.isTauri || app.settings.autosave === false) return confirmDiscard();
+  if (closePending) return false;
+  closePending = true;
+  return new Promise<boolean>((resolve) => {
+    let done = false;
+    const finish = (close: boolean) => {
+      if (done) return;
+      done = true;
+      closePending = false;
+      clearTimeout(timer);
+      document.removeEventListener("keydown", onKey, true);
+      notice.close();
+      resolve(close);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); } };
+    const notice = showNotice(`Closing "${docName()}" - saving a copy you can recover.`, { label: "Cancel", onClick: () => finish(false) });
+    const timer = setTimeout(() => finish(true), CLOSE_COPY_TIMEOUT);
+    document.addEventListener("keydown", onKey, true);
+    writeRecoveryCopy().then(() => finish(true), (e) => { console.warn("close copy failed", e); finish(true); });
+  });
+}
+
+async function closeWindowRequest() { if (await requestClose()) F.closeWindow(); }
 
 function addRecent(path: string) {
   const list = (app.settings.recent || []).filter((p) => p !== path);
@@ -309,18 +341,21 @@ function recoveryIdFor(path: string | null): string {
   return "doc-" + h.toString(16) + "-" + F.basename(path).replace(/[^\w.-]+/g, "_").slice(0, 40);
 }
 
-async function autosaveTick() {
-  if (!F.isTauri || !app.dirty || app.settings.autosave === false || !app.wb) return;
+/** Write a recovery copy of the current workbook; rejects when it cannot be written. */
+async function writeRecoveryCopy(): Promise<void> {
   const dir = await F.recoveryDir();
-  if (!dir) return;
+  if (!dir) throw new Error("no recovery directory");
   if (!app.recoveryId) app.recoveryId = recoveryIdFor(app.path);
   const kind = app.kind === "csv" ? "csv" : "xlsx";
-  try {
-    const bytes = kind === "csv" ? new TextEncoder().encode(csvText()) : (wb().pkg.materialize(), writeXlsx(wb()));
-    await F.writeFile(F.joinPath(dir, app.recoveryId + "." + kind), bytes);
-    await F.writeFile(F.joinPath(dir, app.recoveryId + ".json"), new TextEncoder().encode(JSON.stringify({ path: app.path, name: docName(), savedAt: Date.now(), kind })));
-    flash("Recovery copy saved");
-  } catch (e) { console.warn("autosave failed", e); }
+  const bytes = kind === "csv" ? new TextEncoder().encode(csvText()) : (wb().pkg.materialize(), writeXlsx(wb()));
+  await F.writeFile(F.joinPath(dir, app.recoveryId + "." + kind), bytes);
+  await F.writeFile(F.joinPath(dir, app.recoveryId + ".json"), new TextEncoder().encode(JSON.stringify({ path: app.path, name: docName(), savedAt: Date.now(), kind })));
+}
+
+async function autosaveTick() {
+  if (!F.isTauri || !app.dirty || app.settings.autosave === false || !app.wb) return;
+  try { await writeRecoveryCopy(); flash("Recovery copy saved"); }
+  catch (e) { console.warn("autosave failed", e); }
 }
 
 async function clearRecovery() {
@@ -2392,7 +2427,7 @@ async function boot() {
   setTimeout(revealWindow, 400);
   setInterval(() => { autosaveTick(); }, 60000);
   if (app.settings.autoUpdate !== false) setTimeout(() => { checkForUpdates(false); }, 8000);
-  F.onCloseRequested(confirmDiscard);
+  F.onCloseRequested(requestClose);
   F.onFileDrop((paths) => openPaths(paths), (over) => $("workspace").classList.toggle("drop-target", over));
   (window as any).om = { app, openPath, save, writeTo, wb: () => app.wb, grid: () => app.grid, sheet, applyChanges, setZoom, setTheme, setLocaleId, loadXlsx, writeXlsx };
 }

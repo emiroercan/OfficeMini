@@ -21,7 +21,7 @@ import { setZoomFactor, setHeaderFooters, setViewMode, paginationKey, pageAt, pa
 import { showContextMenu, tableMenu, pasteFromClipboard, ContextActions } from "./editor/contextmenu";
 import { buildToolbar, ToolbarHandle, colorPopup } from "./ui/toolbar";
 import { buildStatusbar, StatusHandle } from "./ui/statusbar";
-import { el, showMenu, MenuItem, tooltip, closeAllPopups, icon } from "./ui/widgets";
+import { el, showMenu, MenuItem, tooltip, closeAllPopups, icon, showNotice } from "./ui/widgets";
 import { showDialog, linkDialog, tableDialog, pageSetupDialog, paragraphDialog, goToPageDialog, shortcutsDialog, aboutDialog, closeDialog } from "./ui/dialogs";
 import { imageSize } from "./docx/images";
 import { twipsToPx } from "./docx/units";
@@ -182,27 +182,30 @@ function rebaseLoaded(bytes: Uint8Array) {
   app.loaded = { ...reloaded, doc: view().state.doc };
 }
 
-/** Write a recovery copy of a dirty document (called every minute). */
-async function autosaveTick() {
-  if (!F.isTauri || !app.dirty || app.settings.autosave === false || !app.handle) return;
+/** Write a recovery copy of the current document; rejects when it cannot be written. */
+async function writeRecoveryCopy(): Promise<void> {
   const dir = await F.recoveryDir();
-  if (!dir) return;
+  if (!dir) throw new Error("no recovery directory");
   if (!app.recoveryId) app.recoveryId = recoveryIdFor(app.path);
   const kind: "docx" | "md" = app.kind === "md" ? "md" : "docx";
-  try {
-    let bytes: Uint8Array;
-    if (kind === "md") {
-      const text = app.source ? sourceTextarea().value : docToMarkdown(view().state.doc, () => null).markdown;
-      bytes = new TextEncoder().encode(text);
-    } else {
-      if (!app.loaded) app.loaded = await loadBlank();
-      bytes = writeDocx(app.loaded, view().state.doc);
-      rebaseLoaded(bytes);
-    }
-    await F.writeFile(F.joinPath(dir, app.recoveryId + "." + kind), bytes);
-    await F.writeFile(F.joinPath(dir, app.recoveryId + ".json"), new TextEncoder().encode(JSON.stringify({ path: app.path, name: docName(), savedAt: Date.now(), kind })));
-    app.status?.flash("Recovery copy saved");
-  } catch (e) { console.warn("autosave failed", e); }
+  let bytes: Uint8Array;
+  if (kind === "md") {
+    const text = app.source ? sourceTextarea().value : docToMarkdown(view().state.doc, () => null).markdown;
+    bytes = new TextEncoder().encode(text);
+  } else {
+    if (!app.loaded) app.loaded = await loadBlank();
+    bytes = writeDocx(app.loaded, view().state.doc);
+    rebaseLoaded(bytes);
+  }
+  await F.writeFile(F.joinPath(dir, app.recoveryId + "." + kind), bytes);
+  await F.writeFile(F.joinPath(dir, app.recoveryId + ".json"), new TextEncoder().encode(JSON.stringify({ path: app.path, name: docName(), savedAt: Date.now(), kind })));
+}
+
+/** Recovery copy of a dirty document, written every minute. */
+async function autosaveTick() {
+  if (!F.isTauri || !app.dirty || app.settings.autosave === false || !app.handle) return;
+  try { await writeRecoveryCopy(); app.status?.flash("Recovery copy saved"); }
+  catch (e) { console.warn("autosave failed", e); }
 }
 
 async function clearRecovery() {
@@ -981,8 +984,42 @@ const actions: ContextActions = {
   toggleSource: () => { toggleSourceView(); },
 };
 
+/**
+ * Closing (Alt+F4, the window X, Ctrl+W) asks nothing: a recovery copy of the unsaved
+ * document is written and the window goes, and the next start offers the copy back. A
+ * notice offers Cancel while the copy is being written; after CLOSE_COPY_TIMEOUT the
+ * window closes whether the copy finished or not, so a slow write cannot trap the user.
+ * Without recovery copies there would be no safety net, so that setting keeps the prompt.
+ */
+const CLOSE_COPY_TIMEOUT = 5000;
+let closePending = false;
+
+async function requestClose(): Promise<boolean> {
+  if (!app.dirty) return true;
+  if (!F.isTauri || app.settings.autosave === false) return confirmDiscard();
+  if (closePending) return false;   // a close is already running; the notice has the Cancel
+  closePending = true;
+  return new Promise<boolean>((resolve) => {
+    let done = false;
+    const finish = (close: boolean) => {
+      if (done) return;
+      done = true;
+      closePending = false;
+      clearTimeout(timer);
+      document.removeEventListener("keydown", onKey, true);
+      notice.close();
+      resolve(close);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); } };
+    const notice = showNotice(`Closing "${docName()}" - saving a copy you can recover.`, { label: "Cancel", onClick: () => finish(false) });
+    const timer = setTimeout(() => finish(true), CLOSE_COPY_TIMEOUT);
+    document.addEventListener("keydown", onKey, true);
+    writeRecoveryCopy().then(() => finish(true), (e) => { console.warn("close copy failed", e); finish(true); });
+  });
+}
+
 async function closeWindowRequest() {
-  if (await confirmDiscard()) F.closeWindow();
+  if (await requestClose()) F.closeWindow();
 }
 
 // ---------------------------------------------------------------------------
@@ -1351,7 +1388,7 @@ async function boot() {
   // Quiet update check a few seconds after start (never blocks opening a document).
   if (app.settings.autoUpdate !== false) setTimeout(() => { checkForUpdates(false); }, 8000);
 
-  F.onCloseRequested(confirmDiscard);
+  F.onCloseRequested(requestClose);
   F.onFileDrop((paths) => {
     for (const p of paths) {
       const ext = F.extname(p);

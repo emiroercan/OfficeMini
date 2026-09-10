@@ -104,6 +104,27 @@ export function showPopup(anchor: HTMLElement | { x: number; y: number }, build:
 }
 
 // ---------------------------------------------------------------------------
+// Notice bar
+
+export interface NoticeHandle { close(): void; setText(text: string): void; }
+
+/**
+ * A small bar at the bottom of the window with one optional action. Unlike a dialog it
+ * takes no focus and blocks nothing, so it can report on work that is already running.
+ */
+export function showNotice(text: string, action?: { label: string; onClick: () => void }): NoticeHandle {
+  const label = el("span", null, text);
+  const bar = el("div", { class: "notice" }, label);
+  if (action) {
+    const b = el("button", { type: "button" }, action.label);
+    b.addEventListener("click", action.onClick);
+    bar.appendChild(b);
+  }
+  document.body.appendChild(bar);
+  return { close() { bar.remove(); }, setText(t: string) { label.textContent = t; } };
+}
+
+// ---------------------------------------------------------------------------
 // Menus
 
 export interface MenuItem {

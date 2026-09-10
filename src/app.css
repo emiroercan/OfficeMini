@@ -168,6 +168,16 @@ body {
 }
 #tooltip .tt-key { color: #b9c6ea; margin-left: 8px; }
 
+/* Notice bar (non-modal: the copy written while the window closes) */
+.notice {
+  position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%); z-index: 1800;
+  display: flex; align-items: center; gap: 14px; padding: 8px 10px 8px 14px; font-size: 13px;
+  background: var(--ui-popup); color: var(--ui-fg); border: 1px solid var(--ui-border);
+  border-radius: 6px; box-shadow: var(--ui-shadow); max-width: 80vw;
+}
+.notice button { font: inherit; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--ui-border); background: var(--ui-input); color: var(--ui-fg); }
+.notice button:hover { background: var(--ui-hover); }
+
 /* Overlay dialogs */
 #overlay { position: fixed; inset: 0; display: none; background: rgba(0,0,0,.35); z-index: 1500; align-items: center; justify-content: center; }
 #overlay.show { display: flex; }
@@ -386,7 +396,7 @@ html[data-theme="dark"] .page-hf img { filter: brightness(.92); }
 @media print {
   html, html[data-theme="dark"] { --paper: #fff; --paper-text: #000; --page-bg: #fff; --link: #0563c1; }
   html, body { height: auto; overflow: visible; background: #fff; }
-  #menubar, #toolbar, #findbar, #statusbar, #tooltip, .menu-popup, .popup, #overlay, .page-num-badge { display: none !important; }
+  #menubar, #toolbar, #findbar, #statusbar, #tooltip, .menu-popup, .popup, #overlay, .notice, .page-num-badge { display: none !important; }
   #app { display: block; height: auto; }
   #workspace { overflow: visible; height: auto; background: #fff; }
   #pagearea { padding: 0 !important; margin: 0; zoom: 1 !important; width: auto; --page-gap: 0px; }
