@@ -203,13 +203,13 @@ async function writeRecoveryCopy(): Promise<void> {
 
 /** Recovery copy of a dirty document, written every minute. */
 async function autosaveTick() {
-  if (!F.isTauri || !app.dirty || app.settings.autosave === false || !app.handle) return;
+  if ((!F.isTauri && !F.isWeb) || !app.dirty || app.settings.autosave === false || !app.handle) return;
   try { await writeRecoveryCopy(); app.status?.flash("Recovery copy saved"); }
   catch (e) { console.warn("autosave failed", e); }
 }
 
 async function clearRecovery() {
-  if (!F.isTauri || !app.recoveryId) return;
+  if ((!F.isTauri && !F.isWeb) || !app.recoveryId) return;
   const dir = await F.recoveryDir();
   if (!dir) return;
   for (const ext of ["docx", "md", "json"]) await F.deleteFile(F.joinPath(dir, app.recoveryId + "." + ext));
@@ -224,7 +224,7 @@ async function discardRecovery(r: RecoveryEntry) {
 
 /** Recovery copies whose original was not saved afterwards. */
 async function findRecoveries(): Promise<RecoveryEntry[]> {
-  if (!F.isTauri) return [];
+  if (!F.isTauri && !F.isWeb) return [];
   const dir = await F.recoveryDir();
   if (!dir) return [];
   const files = await F.listFiles(dir);

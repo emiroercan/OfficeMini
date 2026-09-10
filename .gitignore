@@ -16,3 +16,4 @@ samples/*
 *.key
 *.key.password
 .env
+dist-web

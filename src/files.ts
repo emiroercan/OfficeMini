@@ -1,7 +1,11 @@
 // Bridge to the Tauri backend, with a browser fallback used during development
 // (so the editor can be exercised in a plain browser tab).
 
+import * as web from "./files-web";
+
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+/** Browser build: file access goes through the File System Access API, not the Rust backend. */
+export const isWeb = __WEB_BUILD__;
 
 type Invoke = (cmd: string, args?: any, options?: any) => Promise<any>;
 let _invoke: Invoke | null = null;
@@ -45,6 +49,7 @@ export function joinPath(dir: string, name: string): string {
 }
 
 export async function readFile(path: string): Promise<Uint8Array> {
+  if (isWeb) return web.readFile(path);
   if (isTauri) {
     const inv = await invoke();
     const buf: ArrayBuffer = await inv("read_file", { path });
@@ -63,6 +68,7 @@ export async function readTextFile(path: string): Promise<string> {
 }
 
 export async function writeFile(path: string, data: Uint8Array): Promise<void> {
+  if (isWeb) return web.writeFile(path, data);
   if (isTauri) {
     const inv = await invoke();
     await inv("write_file", data, { headers: { "x-path": encodeURIComponent(path) } });
@@ -75,11 +81,15 @@ export async function writeFile(path: string, data: Uint8Array): Promise<void> {
 }
 
 export async function fileExists(path: string): Promise<boolean> {
+  if (isWeb) return web.fileExists(path);
   if (isTauri) { const inv = await invoke(); return inv("file_exists", { path }); }
   return browserFiles.has(path);
 }
 
 export async function openDialog(filters: FileFilter[] = DOC_FILTERS, multiple = false): Promise<string[] | null> {
+  // Falls through to the <input type="file"> path when the browser has no picker (Firefox,
+  // Safari): the document opens, but saving back to it needs a File System Access handle.
+  if (isWeb && web.supported()) return web.openDialog(filters, multiple);
   if (isTauri) {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const r = await open({ multiple, filters, title: "Open document" });
@@ -102,6 +112,7 @@ export async function openDialog(filters: FileFilter[] = DOC_FILTERS, multiple =
 }
 
 export async function saveDialog(defaultPath: string | null, filters: FileFilter[]): Promise<string | null> {
+  if (isWeb && web.supported()) return web.saveDialog(defaultPath, filters);
   if (isTauri) {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const r = await save({ defaultPath: defaultPath || undefined, filters, title: "Save document" });
@@ -146,22 +157,26 @@ export async function showMessage(message: string, title = "OfficeMini", kind: "
 export interface FileInfo { name: string; path: string; size: number; mtime: number; }
 
 export async function recoveryDir(): Promise<string | null> {
+  if (isWeb) { try { return await web.recoveryDir(); } catch { return null; } }
   if (!isTauri) return null;
   try { const inv = await invoke(); return await inv("recovery_dir"); } catch { return null; }
 }
 
 export async function listFiles(dir: string): Promise<FileInfo[]> {
+  if (isWeb) return web.listFiles(dir);
   if (!isTauri) return [];
   try { const inv = await invoke(); return await inv("list_files", { dir }); } catch { return []; }
 }
 
 export async function deleteFile(path: string): Promise<void> {
+  if (isWeb) return web.deleteFile(path);
   if (!isTauri) return;
   try { const inv = await invoke(); await inv("delete_file", { path }); } catch { /* ignore */ }
 }
 
 /** Modification time (seconds) or null if the file does not exist. */
 export async function fileMtime(path: string): Promise<number | null> {
+  if (isWeb) return web.fileMtime(path);
   if (!isTauri) return null;
   try { const inv = await invoke(); return await inv("file_mtime", { path }); } catch { return null; }
 }
@@ -185,6 +200,9 @@ export async function onBackendEvent<T = unknown>(name: string, cb: (payload: T)
 }
 
 export async function openInNewWindow(path?: string): Promise<void> {
+  // A file handle belongs to the tab that was granted it, so a new tab cannot be handed the
+  // path: it opens empty and the document is picked there instead.
+  if (isWeb) { window.open(location.pathname, "_blank"); return; }
   if (isTauri) { const inv = await invoke(); await inv("open_window", { path: path || null }); return; }
   window.open(location.pathname + (path ? "?file=" + encodeURIComponent(path) : ""), "_blank");
 }

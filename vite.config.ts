@@ -31,11 +31,15 @@ let commit = "";
 try { commit = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); } catch { /* not a git checkout */ }
 const buildInfo = `${commit || "local"}, ${new Date().toISOString().slice(0, 10)}`;
 
-// Tauri expects a fixed port; fail if that port is not available.
-export default defineConfig({
+// Two targets from one source tree: the default build is the Tauri app, `--mode web` is the
+// browser build that talks to the File System Access API instead of the Rust backend. The flag
+// is a compile-time constant, so each build folds the other one's branches away entirely.
+export default defineConfig(({ mode }) => {
+  const web = mode === "web";
+  return {
   clearScreen: false,
   plugins: [devSave()],
-  define: { __APP_VERSION__: JSON.stringify(pkg.version), __BUILD_INFO__: JSON.stringify(buildInfo) },
+  define: { __APP_VERSION__: JSON.stringify(pkg.version), __BUILD_INFO__: JSON.stringify(buildInfo), __WEB_BUILD__: JSON.stringify(web) },
   server: {
     port: 1420,
     strictPort: true,
@@ -45,9 +49,11 @@ export default defineConfig({
     target: ["es2022", "chrome110", "safari16"],
     minify: "esbuild",
     sourcemap: false,
-    outDir: "dist",
+    // The web build never overwrites the app's dist: the Tauri bundle only ever ships ../dist.
+    outDir: web ? "dist-web" : "dist",
     emptyOutDir: true,
     chunkSizeWarningLimit: 1500,
   },
   esbuild: { legalComments: "none" },
+  };
 });
