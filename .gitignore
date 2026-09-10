@@ -17,3 +17,6 @@ samples/*
 *.key.password
 .env
 dist-web
+dist-ext
+
+officemini-extension-*.zip

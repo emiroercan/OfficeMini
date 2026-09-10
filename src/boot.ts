@@ -6,6 +6,9 @@ import { cliArgs, extname } from "./files";
 const SHEET_EXT = new Set(["xlsx", "xlsm", "xltx", "csv", "tsv"]);
 
 async function start() {
+  // The browser extension hands a document in through the query string; turn it into the
+  // ordinary "?file=" the rest of the app reads, before either editor loads.
+  if (__WEB_BUILD__) await (await import("./files-web")).adoptEntryUrl();
   const params = new URLSearchParams(location.search);
   let file = params.get("file");
   const kind = params.get("new");

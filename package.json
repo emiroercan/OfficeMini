@@ -9,6 +9,9 @@
     "dev:web": "vite --mode web",
     "build:web": "tsc --noEmit && vite build --mode web",
     "preview:web": "vite preview --mode web --outDir dist-web",
+    "dev:ext": "vite --mode ext",
+    "build:ext": "tsc --noEmit && vite build --mode ext",
+    "pack:ext": "npm run build:ext && node scripts/pack-ext.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

@@ -5,7 +5,7 @@
 // looks like one - "/web/3/Report.docx" - so basename, dirname, extname and joinPath keep
 // working untouched and nothing outside this file needs to know the difference. Recovery
 // copies live in the origin private file system under "/opfs/...", which needs no permission
-// and survives a reload.
+// and survives a reload, and a document the extension opened from a link is "/net/...".
 //
 // Nothing here is imported by the Tauri build: __WEB_BUILD__ is a compile-time false there,
 // so the calls fold away and the module is dropped from the bundle.
@@ -55,12 +55,81 @@ async function writable(h: Handle) {
   return h.createWritable();
 }
 
+// ---- documents handed in from outside (the browser extension) ---------------
+//
+// The extension opens a link's document in the editor instead of letting Chrome write it to
+// the Downloads folder. Those bytes arrive from a URL, not from a handle, so there is nothing
+// on disk to save back to - the editors route Ctrl+S to Save as... for these paths. Everything
+// else about them is an ordinary path: "/net/2/Report.docx" gives the right basename and
+// extension, which is all the rest of the app ever asks.
+
+const NET = "/net";
+interface Remote { url: string | null; bytes?: Uint8Array }
+const remotes = new Map<string, Remote>();
+let netSeq = 0;
+
+function safeName(name: string): string {
+  const n = name.replace(/[\\/?#]+/g, "_").trim();
+  return n || "Document";
+}
+
+export function registerRemote(name: string, url: string | null, bytes?: Uint8Array): string {
+  const path = `${NET}/${++netSeq}/${safeName(name)}`;
+  remotes.set(path, { url, bytes });
+  return path;
+}
+
+/** True for a document that came from a URL: there is no file behind it to write to. */
+export function isRemote(path: string): boolean { return remotes.has(path); }
+
+/** Where a remote document came from, for the status bar and for reopening it. */
+export function remoteUrl(path: string): string | null { return remotes.get(path)?.url ?? null; }
+
+function nameFromUrl(url: string): string {
+  try {
+    const last = new URL(url, location.href).pathname.split("/").pop() || "";
+    return decodeURIComponent(last) || "Document";
+  } catch { return "Document"; }
+}
+
+/** Bytes the extension's service worker already fetched, parked in the origin private FS. */
+async function readInbox(token: string): Promise<Uint8Array> {
+  const dir = await opfsSub("inbox", false);
+  const f = await (await dir.getFileHandle(token)).getFile();
+  return new Uint8Array(await f.arrayBuffer());
+}
+
+/**
+ * Entry point for the extension, run before any editor module loads. The extension opens
+ *
+ *     index.html?inbox=<token>&name=<file>&src=<url>
+ *
+ * where the token names bytes the service worker has already fetched (so a one-shot download
+ * URL is only ever requested once) and `src` is the fallback if that hand-off failed - or the
+ * only thing present, when the tab was opened from the context menu. Either becomes a plain
+ * `?file=` path, which is the shape `boot.ts` and both editors already understand. The inbox
+ * copy is deliberately left in place so that reloading the tab reopens the same document.
+ */
+export async function adoptEntryUrl(): Promise<void> {
+  const p = new URLSearchParams(location.search);
+  const token = p.get("inbox");
+  const src = p.get("src");
+  if (!token && !src) return;
+  let bytes: Uint8Array | undefined;
+  if (token) { try { bytes = await readInbox(token); } catch { /* fall back to fetching src */ } }
+  if (!bytes && !src) return;
+  p.set("file", registerRemote(p.get("name") || (src ? nameFromUrl(src) : "Document"), src, bytes));
+  history.replaceState(null, "", location.pathname + "?" + p.toString());
+}
+
 // ---- origin private file system (recovery copies) ---------------------------
 
-async function opfsDir(create = true): Promise<FileSystemDirectoryHandle> {
+async function opfsSub(name: string, create = true): Promise<FileSystemDirectoryHandle> {
   const root = await navigator.storage.getDirectory();
-  return root.getDirectoryHandle("recovery", { create });
+  return root.getDirectoryHandle(name, { create });
 }
+
+async function opfsDir(create = true): Promise<FileSystemDirectoryHandle> { return opfsSub("recovery", create); }
 
 function opfsName(path: string): string { return path.slice(OPFS.length + 1).replace(/^recovery\//, ""); }
 
@@ -111,6 +180,17 @@ export async function readFile(path: string): Promise<Uint8Array> {
   }
   const h = handles.get(path);
   if (h) return new Uint8Array(await (await h.getFile()).arrayBuffer());
+  const rem = remotes.get(path);
+  if (rem) {
+    if (rem.bytes) return rem.bytes;
+    if (!rem.url) throw new Error("This document is no longer available - open the link again");
+    // Cookies go with it: the link may only be readable to the signed-in user. The bytes are
+    // kept because a download URL is often single-use and cannot be fetched twice.
+    const r = await fetch(rem.url, { credentials: "include" });
+    if (!r.ok) throw new Error("Cannot download " + rem.url + " (" + r.status + ")");
+    rem.bytes = new Uint8Array(await r.arrayBuffer());
+    return rem.bytes;
+  }
   // Not a granted handle: a URL the page can fetch (the bundled samples, a ?file= link).
   const res = await fetch(path);
   if (!res.ok) throw new Error("Cannot load " + path + " (" + res.status + ")");
@@ -127,6 +207,7 @@ export async function writeFile(path: string, data: Uint8Array): Promise<void> {
   }
   const h = handles.get(path);
   if (!h) {
+    if (remotes.has(path)) throw new Error("This document came from a web page - use Save as... to choose where to keep it");
     // Side files (a Markdown document's images) sit next to the document, and a file handle
     // gives no way to reach its folder. Writing those needs showDirectoryPicker - see
     // docs/WEB-HANDOFF.md; until then the document itself saves and the assets do not.
@@ -138,7 +219,7 @@ export async function writeFile(path: string, data: Uint8Array): Promise<void> {
 }
 
 export async function fileExists(path: string): Promise<boolean> {
-  if (handles.has(path)) return true;
+  if (handles.has(path) || remotes.has(path)) return true;
   if (!isOpfs(path)) return false;
   try { await (await opfsDir(false)).getFileHandle(opfsName(path)); return true; } catch { return false; }
 }

@@ -50,8 +50,11 @@ Ordered. Each one is a release you could hand someone.
 
 - A Chrome extension that intercepts `.docx`/`.xlsx` links and downloads and renders them in the
   editor instead of writing them to disk. Shares the same bundle; only the entry differs.
+  **Done as a prototype** — `npm run build:ext`, installable unpacked, `docs/WEB-EXTENSION.md`.
 - This is where the web build does something the desktop app cannot, so treat it as the point of
   the project rather than a bonus.
+- Still open before it could be published: narrowing `<all_urls>` to a permission asked for per
+  site, and the store listing's own list.
 
 ## Non-goals
 
@@ -83,6 +86,8 @@ These are why people use it, and the web build does not get to trade them away.
 1. Firefox/Safari: read-only fallback, or refuse with an explanation?
 2. Is `Ctrl+W`/tab-close worth a "you have unsaved changes" `beforeunload` prompt? The browser
    only allows a generic one, and the desktop app's Alt+F4 behaviour (write a copy, close, 5s
-   cancel) is not reproducible in a tab.
-3. Extension or PWA first? They share everything except the entry point, but the extension is
-   the part with no desktop equivalent.
+   cancel) is not reproducible in a tab. **Provisionally yes**: the extension build turns it on
+   (`F.warnOnClose`), because a document opened from a link has no file to fall back on. It is
+   one `__WEB_BUILD__` guard in each editor if that turns out to be the wrong call.
+3. ~~Extension or PWA first?~~ **Answered: the extension**, and it is built. The PWA is still
+   unstarted.

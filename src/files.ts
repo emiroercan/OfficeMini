@@ -80,6 +80,32 @@ export async function writeFile(path: string, data: Uint8Array): Promise<void> {
   if (!res.ok) throw new Error("dev save failed: " + res.status);
 }
 
+/**
+ * A document the browser extension opened from a link: the bytes came over the network, so
+ * there is no file behind the path and Ctrl+S has to become Save as... . Always false in the
+ * desktop build, where the whole expression folds away.
+ */
+export function isRemote(path: string | null): boolean {
+  return isWeb && !!path && web.isRemote(path);
+}
+
+/** The URL a remote document came from, or null. */
+export function remoteUrl(path: string | null): string | null {
+  return isWeb && path ? web.remoteUrl(path) : null;
+}
+
+/**
+ * Browser builds only: warn before a tab closes on unsaved work. The browser allows nothing
+ * but its own generic wording, which is why the desktop app handles this itself.
+ */
+export function warnOnClose(dirty: () => boolean): void {
+  window.addEventListener("beforeunload", (e) => {
+    if (!dirty()) return;
+    e.preventDefault();
+    e.returnValue = "";
+  });
+}
+
 export async function fileExists(path: string): Promise<boolean> {
   if (isWeb) return web.fileExists(path);
   if (isTauri) { const inv = await invoke(); return inv("file_exists", { path }); }

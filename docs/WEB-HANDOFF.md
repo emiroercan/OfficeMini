@@ -1,9 +1,10 @@
 # OfficeMini Web — handoff
 
 State as of 2026-09-10, on top of v0.3.3. A working prototype of a browser build lives in this
-repo behind a build flag. It is **not** wired into the desktop app in any way, and the desktop
-build is byte-for-byte unaffected. This document is what you need to take it further, either
-here or in a repo of its own.
+repo behind a build flag, and a Chrome extension built from the same bundle lives beside it. It
+is **not** wired into the desktop app in any way, and the desktop build is byte-for-byte
+unaffected. This document is what you need to take it further, either here or in a repo of its
+own. The extension has its own document: `docs/WEB-EXTENSION.md`.
 
 ## What OfficeMini is
 
@@ -37,6 +38,7 @@ src/updater.ts     3
 | Recovery offered on the next start | works within a session; see *Handle persistence* |
 | Print | unchanged — it was always `window.print()` |
 | Everything else (editing, formulas, filters, find…) | unchanged, it never touched Tauri |
+| Chrome extension: a `.docx`/`.xlsx` link opens in the editor, not Downloads | works, `docs/WEB-EXTENSION.md` |
 
 Verified end to end by opening a real 61 KB `.xlsx` through a `FileSystemFileHandle`, editing a
 cell and saving: 63,506 bytes written back to the same handle, still a valid zip, re-reading the
@@ -52,9 +54,15 @@ file returns the edited cell. No download at any point.
 npm run dev        # Tauri frontend, __WEB_BUILD__ === false   → dist/
 npm run dev:web    # browser build,  __WEB_BUILD__ === true    → dist-web/
 npm run build:web  # production browser build
+npm run build:ext  # the same browser build, packaged as a Chrome extension → dist-ext/
+npm run pack:ext   # …and zipped for the Chrome Web Store
 ```
 
-`vite.config.ts` switches `outDir` on the mode, so the web build **can never overwrite `dist/`**,
+`--mode ext` is `--mode web` with three differences: a relative `base` (an extension page is not
+served from a root), `dist-ext`, and a plugin that copies `extension/` and the app's icons in
+after the bundle. There is no third code path.
+
+`vite.config.ts` switches `outDir` on the mode, so the web builds **can never overwrite `dist/`**,
 which is what the Tauri bundler ships. Because the flag is a constant, each build folds the other
 one's branches away. This is checked, not assumed:
 
@@ -69,14 +77,19 @@ The app passes file **paths** around as strings; the browser has only handles. E
 user grants is registered under a synthetic path that still looks like one:
 
 ```
-/web/3/Report.docx     → a granted FileSystemFileHandle
+/web/3/Report.docx       → a granted FileSystemFileHandle
 /opfs/recovery/<id>.docx → the origin private file system
+/net/1/Report.docx       → bytes the extension handed in from a link
 ```
 
 so `basename`, `dirname`, `extname` and `joinPath` keep working and nothing outside this file
 knows the difference. `readFile`/`writeFile` dispatch on the prefix: `/opfs/` → OPFS, a
-registered path → the handle, anything else → `fetch` (which is how the bundled samples and
-`?file=` links still load).
+registered path → the handle, `/net/` → the bytes or the URL they came from, anything else →
+`fetch` (which is how the bundled samples and `?file=` links still load).
+
+`adoptEntryUrl()` is the extension's door in: it turns `?inbox=<token>` or `?src=<url>` into a
+`/net/` path and rewrites the query string to the `?file=` the rest of the app reads, before
+either editor module loads.
 
 OPFS was chosen for recovery copies because it needs no permission prompt, survives reloads and
 is invisible to the user — exactly the properties an autosave sidecar wants.
@@ -98,8 +111,13 @@ export async function readFile(path: string): Promise<Uint8Array> {
 `sheets/app.ts` changed from `!F.isTauri` to `!F.isTauri && !F.isWeb`, which folds back to the
 original expression in the desktop build.
 
+The extension added `isRemote`, `remoteUrl` and `warnOnClose` here, used at three call sites in
+each editor — `save()`, `addRecent()` and the close warning — each guarded by `__WEB_BUILD__`
+rather than `F.isWeb`. **That distinction matters:** see the gotcha at the end of this file.
+
 **Rule for anything you add: the desktop build must not change.** Keep new code behind `isWeb`
-or in `files-web.ts`, and re-run the two `grep -l` checks above.
+or in `files-web.ts`, and re-run `docs/WEB-TESTS.md` §1 — which now compares `dist/` against a
+build of `HEAD` byte-for-byte, not just greps it.
 
 ## Known gaps
 
@@ -119,7 +137,11 @@ or in `files-web.ts`, and re-run the two `grep -l` checks above.
    existing `<input type="file">` path: documents open, but saving back to them is impossible —
    they would need a download. Decide whether that fallback ships or is refused with a message.
 5. **`src/updater.ts`** is dead weight in the web build (it early-returns on `isTauri`), and it
-   drags ~296 KB of shared chunk. See the note under *Worth doing early*.
+   drags ~296 KB of shared chunk. See the note under *Worth doing early*. In the extension it is
+   pure dead weight — Chrome does the updating.
+6. **`blob:` downloads cannot be intercepted** by the extension: the URL belongs to the page
+   that made it and a service worker cannot fetch it. Those still download normally. This is
+   the only thing that would justify giving the extension a content script.
 
 ## Not goals (from the owner, explicitly)
 
@@ -148,7 +170,11 @@ is testable against the desktop app's behaviour, which is the reference implemen
 - **Drop `updater.ts` from the web entry.** It imports `./ui/dialogs`, which pulls ProseMirror
   into a chunk the Sheets editor loads but never uses (~296 KB). Importing `./ui/dialog-core`
   instead fixes it for both builds; it is a one-line change that has been sitting unmade.
-- **Decide the non-Chromium story** before building anything else on top of the picker.
+- **Decide the non-Chromium story** before building anything else on top of the picker. The
+  extension sidesteps it (it is a Chrome extension), the PWA does not.
+- **Narrow the extension's `<all_urls>` host permission** to `optional_host_permissions`
+  requested per site, before any Chrome Web Store submission. `docs/WEB-EXTENSION.md` has the
+  rest of that list.
 
 ## Gotchas learned the hard way
 
@@ -159,3 +185,10 @@ is testable against the desktop app's behaviour, which is the reference implemen
   evaluate. Stub *only* the dialog and hand back a real handle; everything after it is then the
   app's own code. `WEB-TESTS.md` has the recipe.
 - Vite's `define` values must be JSON: `__WEB_BUILD__: JSON.stringify(web)`, not `web`.
+- **`F.isWeb` does not fold; `__WEB_BUILD__` does.** Inside `files.ts` the const is local and
+  rollup drops the dead branch — which is why the whole web backend disappears from `dist/`.
+  From `main.ts` or `sheets/app.ts` it is an import from a *different chunk*, so it survives as
+  a real call and the desktop bundle grows. Writing `if (F.isWeb) …` in an editor added 20
+  bytes to two desktop chunks; `if (__WEB_BUILD__) …` made them byte-identical again.
+- **Do not link `node_modules` into a comparison worktree.** `git worktree remove --force`
+  follows a Windows junction and deletes the real directory behind it.

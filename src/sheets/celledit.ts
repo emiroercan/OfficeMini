@@ -87,7 +87,15 @@ export class CellEditor {
       ta.addEventListener("input", () => this.onInput(isF));
       ta.addEventListener("blur", () => { if (this.suppressBlur) return; setTimeout(() => { if (this.active && document.activeElement !== this.el && document.activeElement !== this.fbar && !this.suppressBlur) this.finish(null, true); }, 0); });
       ta.addEventListener("mousedown", () => { this.pointing = null; });
-      ta.addEventListener("keyup", (e) => { this.updateHighlights(); if (this.popup && (e.key === "Home" || e.key === "End" || e.key.startsWith("Arrow"))) this.maybeAutocomplete(); });
+      // Arrow keys move the selection *inside* an open completion list, so re-running the
+      // completion on their keyup threw that selection away again a moment after every press -
+      // the list appeared to snap back to the first entry. Only caret moves along the line
+      // re-evaluate what is being completed.
+      ta.addEventListener("keyup", (e) => {
+        this.updateHighlights();
+        const caretMoved = e.key === "Home" || e.key === "End" || e.key === "ArrowLeft" || e.key === "ArrowRight";
+        if (this.popup && caretMoved) this.maybeAutocomplete();
+      });
     }
     fbarEl.addEventListener("focus", () => { if (!this.active) this.begin(null, true); this.inFbar = true; });
     fbarEl.addEventListener("mouseup", () => this.updateHighlights());
@@ -372,8 +380,12 @@ export class CellEditor {
     const prefix = m[1].toUpperCase().replace(/İ/g, "I");
     const items = FUNCTION_NAMES.filter((f) => f.startsWith(prefix)).slice(0, 12);
     if (!items.length || (items.length === 1 && items[0] === prefix)) { this.closePopup(); this.showFunctionHint(); return; }
+    // Keep the highlighted entry when the list itself has not changed, so re-evaluating the
+    // completion never moves the selection out from under the arrow keys.
+    const same = items.length === this.popupItems.length && items.every((f, i) => f === this.popupItems[i]);
     this.popupItems = items;
-    this.popupSel = 0;
+    if (!same) this.popupSel = 0;
+    else this.popupSel = Math.min(this.popupSel, items.length - 1);
     this.renderPopup();
   }
 

@@ -6,6 +6,18 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 1420
+    },
+    {
+      "name": "officemini-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:web"],
+      "port": 1420
+    },
+    {
+      "name": "officemini-ext",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:ext"],
+      "port": 1420
     }
   ]
 }

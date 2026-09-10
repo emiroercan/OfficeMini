@@ -374,7 +374,10 @@ async function openFile() {
 // Saving
 
 async function save(): Promise<boolean> {
-  if (!app.path || app.kind === "new") return saveAs();
+  // A document the extension opened from a link has no file behind it: Ctrl+S has to ask where.
+  // __WEB_BUILD__ is the compile-time flag itself, so the test folds away in the desktop build;
+  // F.isWeb would not - it is an import from another chunk, and survives as a call.
+  if (!app.path || app.kind === "new" || (__WEB_BUILD__ && F.isRemote(app.path))) return saveAs();
   return writeTo(app.path);
 }
 
@@ -453,6 +456,7 @@ async function confirmDiscard(): Promise<boolean> {
 // Recent files
 
 function addRecent(path: string) {
+  if (__WEB_BUILD__ && F.isRemote(path)) return;   // a link, not a file: Recent cannot reopen it
   const list = (app.settings.recent || []).filter((p) => p !== path);
   list.unshift(path);
   app.settings.recent = list.slice(0, 12);
@@ -1394,6 +1398,7 @@ async function boot() {
   if (app.settings.autoUpdate !== false) setTimeout(() => { checkForUpdates(false); }, 8000);
 
   F.onCloseRequested(requestClose);
+  if (__WEB_BUILD__) F.warnOnClose(() => app.dirty);
   F.onFileDrop((paths) => {
     for (const p of paths) {
       const ext = F.extname(p);

@@ -228,7 +228,10 @@ async function openFile() {
 }
 
 async function save(): Promise<boolean> {
-  if (!app.path || app.kind === "new") return saveAs();
+  // A document the extension opened from a link has no file behind it: Ctrl+S has to ask where.
+  // __WEB_BUILD__ is the compile-time flag itself, so the test folds away in the desktop build;
+  // F.isWeb would not - it is an import from another chunk, and survives as a call.
+  if (!app.path || app.kind === "new" || (__WEB_BUILD__ && F.isRemote(app.path))) return saveAs();
   return writeTo(app.path);
 }
 
@@ -324,6 +327,7 @@ async function requestClose(): Promise<boolean> {
 async function closeWindowRequest() { if (await requestClose()) F.closeWindow(); }
 
 function addRecent(path: string) {
+  if (__WEB_BUILD__ && F.isRemote(path)) return;   // a link, not a file: Recent cannot reopen it
   const list = (app.settings.recent || []).filter((p) => p !== path);
   list.unshift(path);
   app.settings.recent = list.slice(0, 12);
@@ -673,7 +677,6 @@ function applyChanges(changes: CellChange[], label: string) {
 
 function afterModel() {
   app.engine!.recalcAll();
-  if (sheet().autoFilter) applyFilters(sheet(), styles(), formulaRowTest());
   grid().invalidate();
   setDirty(true);
   updateFbar();
@@ -687,6 +690,10 @@ function structural(label: string, mutate: () => void, othersToo = false) {
   const e = structuralEntry(wb(), grid().sheetIdx(), label, mutate, othersToo);
   pushEntry(e, before);
   styles().invalidate();
+  // Inserting, deleting or sorting rows moves them under the filter, and the hidden set is a
+  // set of row numbers - it has to be rebuilt or the wrong rows stay hidden. Plain cell edits
+  // deliberately do not do this: see reapplyFilter().
+  reapplyFilter();
   afterModel();
 }
 
@@ -1140,6 +1147,18 @@ function formulaRowTest(): FormulaRowTest {
       return v === true || (typeof v === "number" && v !== 0);
     } catch { return false; }
   };
+}
+
+/**
+ * Recompute which rows the filter hides. This is *not* run after every edit on purpose: a
+ * filtered sheet is a working view, and re-filtering on each keystroke makes the row you are
+ * typing in vanish mid-edit and pastes land on rows that moved under the cursor. Excel behaves
+ * the same way - criteria apply when you set them, and Data > Reapply refreshes them. Rows
+ * added or changed while a filter is on therefore stay visible until you ask.
+ */
+function reapplyFilter() {
+  const s = sheet();
+  if (s.autoFilter) applyFilters(s, styles(), formulaRowTest());
 }
 
 function toggleFilter() {
@@ -1987,6 +2006,7 @@ function buildMenubar() {
       { label: "Sort range…", action: () => sortDialog() },
       { sep: true },
       { label: sheet().autoFilter ? "Remove filter" : "Create a filter", key: `${MOD}+Shift+L`, action: () => toggleFilter() },
+      { label: "Reapply filter", action: () => { reapplyFilter(); grid().invalidate(); updateStatus(); const n = sheet().hiddenRowsByFilter.size; flash(n ? `${n} row${n === 1 ? "" : "s"} hidden by filter` : "Showing all rows"); }, disabled: !sheet().autoFilter },
       { label: "Clear filter criteria", action: () => clearFilters(), disabled: !sheet().autoFilter },
       { sep: true },
       { label: "Pivot table…", action: () => createPivot() },
@@ -2489,6 +2509,7 @@ async function boot() {
   setInterval(() => { autosaveTick(); }, 60000);
   if (app.settings.autoUpdate !== false) setTimeout(() => { checkForUpdates(false); }, 8000);
   F.onCloseRequested(requestClose);
+  if (__WEB_BUILD__) F.warnOnClose(() => app.dirty);
   F.onFileDrop((paths) => openPaths(paths), (over) => $("workspace").classList.toggle("drop-target", over));
   (window as any).om = { app, openPath, save, writeTo, wb: () => app.wb, grid: () => app.grid, sheet, applyChanges, setZoom, setTheme, setLocaleId, loadXlsx, writeXlsx };
 }

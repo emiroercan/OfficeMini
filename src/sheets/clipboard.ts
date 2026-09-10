@@ -79,6 +79,24 @@ export type PasteMode = "all" | "values" | "formats" | "formulas" | "transpose";
  * If the target selection is larger than the clip and a multiple of it, the
  * clip is tiled (like Sheets); a single-cell clip fills the whole selection.
  */
+/**
+ * Rows a paste lands on, starting at `from`. Rows the filter has hidden (or that were hidden
+ * by hand) are skipped, so pasting a column of values into a filtered list fills the rows you
+ * can see instead of the ones in between. `count` rows always come back; if the sheet runs out
+ * of visible rows the remainder continues past the end.
+ */
+function rowIsHidden(sheet: Sheet, r: number): boolean {
+  return !!sheet.rows.get(r)?.hidden || sheet.hiddenRowsByFilter.has(r);
+}
+
+function pasteRows(sheet: Sheet, from: number, count: number): number[] {
+  const out: number[] = [];
+  let r = from;
+  while (out.length < count && r < MAXR) { if (!rowIsHidden(sheet, r)) out.push(r); r++; }
+  while (out.length < count) out.push(MAXR - 1);
+  return out;
+}
+
 export function pasteInternal(wb: Workbook, sheet: Sheet, target: Range, mode: PasteMode): { changes: CellChange[]; resultRange: Range; cutSource: { sheet: string; range: Range } | null } {
   const clip = internal!;
   const h = clip.range.r2 - clip.range.r1 + 1, w = clip.range.c2 - clip.range.c1 + 1;
@@ -88,6 +106,7 @@ export function pasteInternal(wb: Workbook, sheet: Sheet, target: Range, mode: P
   const repR = th >= ch && th % ch === 0 && (th > ch || tw > cw) && !clip.cut ? th / ch : 1;
   const repC = tw >= cw && tw % cw === 0 && (th > ch || tw > cw) && !clip.cut ? tw / cw : 1;
   const changes: CellChange[] = [];
+  const rows = pasteRows(sheet, target.r1, repR * ch);
   const styleMap = new Map<number, number>();
   const mapStyle = (cell: Cell): number => {
     // Same workbook: style indices are valid as-is (clipboard survives sheet switches).
@@ -97,8 +116,8 @@ export function pasteInternal(wb: Workbook, sheet: Sheet, target: Range, mode: P
   for (let rr = 0; rr < repR; rr++) for (let cc = 0; cc < repC; cc++) {
     for (const cc0 of clip.cells) {
       const pr = transpose ? cc0.c : cc0.r, pc = transpose ? cc0.r : cc0.c;
-      const r = target.r1 + rr * ch + pr, c = target.c1 + cc * cw + pc;
-      if (r >= MAXR || c >= MAXC) continue;
+      const r = rows[rr * ch + pr], c = target.c1 + cc * cw + pc;
+      if (r === undefined || r >= MAXR || c >= MAXC) continue;
       const existing = sheet.cells.get(key(r, c));
       const src = cc0.cell;
       if (!src) { if (mode !== "formats" && existing) changes.push({ r, c, cell: existing.s && mode === "values" ? { v: null, s: existing.s } : null }); continue; }
@@ -113,7 +132,7 @@ export function pasteInternal(wb: Workbook, sheet: Sheet, target: Range, mode: P
       changes.push({ r, c, cell });
     }
   }
-  const resultRange: Range = { r1: target.r1, c1: target.c1, r2: target.r1 + repR * ch - 1, c2: target.c1 + repC * cw - 1 };
+  const resultRange: Range = { r1: target.r1, c1: target.c1, r2: rows[rows.length - 1] ?? target.r1, c2: target.c1 + repC * cw - 1 };
   void styleMap; void srcSheetIsThis;
   return { changes, resultRange, cutSource: clip.cut ? { sheet: clip.sheet, range: clip.range } : null };
 }
@@ -173,9 +192,14 @@ export function pasteExternal(wb: Workbook, sheet: Sheet, at: { r: number; c: nu
     const cell = inputCell(wb, sheet, r, c, text);
     changes.push({ r, c, cell });
   };
-  if (reps) { for (let r = reps.r1; r <= reps.r2; r++) for (let c = reps.c1; c <= reps.c2; c++) put(r, c, grid[0][0]); return { changes, resultRange: reps }; }
-  grid.forEach((row, i) => { row.forEach((text, j) => { put(at.r + i, at.c + j, text); }); maxC = Math.max(maxC, row.length); });
-  return { changes, resultRange: { r1: at.r, c1: at.c, r2: at.r + grid.length - 1, c2: at.c + Math.max(0, maxC - 1) } };
+  if (reps) {
+    for (let r = reps.r1; r <= reps.r2; r++) for (let c = reps.c1; c <= reps.c2; c++) if (!rowIsHidden(sheet, r)) put(r, c, grid[0][0]);
+    return { changes, resultRange: reps };
+  }
+  // Same rule as an internal paste: rows the filter hides are skipped, not written through.
+  const rows = pasteRows(sheet, at.r, grid.length);
+  grid.forEach((row, i) => { row.forEach((text, j) => { put(rows[i], at.c + j, text); }); maxC = Math.max(maxC, row.length); });
+  return { changes, resultRange: { r1: at.r, c1: at.c, r2: rows[rows.length - 1] ?? at.r, c2: at.c + Math.max(0, maxC - 1) } };
 }
 
 export { formatValue, editText, xfWith, isError };
