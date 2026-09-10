@@ -56,6 +56,13 @@ export function closeOpenParens(text: string): string {
   return text + (inStr ? '"' : "") + ")".repeat(depth);
 }
 
+/**
+ * A reference sitting just before the caret, which pointing replaces rather than appends to.
+ * Whole-column (A:A) and whole-row (3:3) forms count: pointing at a header writes those, and
+ * without them a second click would leave "=A:AH8" behind.
+ */
+const REF_BEFORE_CARET = /((?:'[^']*'|[A-Za-z0-9_.]+)!)?(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?|\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}|\$?\d+:\$?\d+)$/;
+
 export class CellEditor {
   el: HTMLTextAreaElement;
   fbar: HTMLTextAreaElement;
@@ -225,6 +232,7 @@ export class CellEditor {
 
   // ---- reference pointing ------------------------------------------------------
 
+
   /** Can a reference be inserted at the caret (after an operator, "(", "," or at a ref we are already pointing at)? */
   private canPoint(): boolean {
     const ta = this.current();
@@ -239,8 +247,8 @@ export class CellEditor {
     if (!this.pointing) {
       // If the caret is right after a partially typed ref, replace it.
       const before = ta.value.slice(0, ta.selectionStart);
-      const m = /(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?)$/.exec(before);
-      const start = m ? ta.selectionStart - m[1].length : ta.selectionStart;
+      const m = REF_BEFORE_CARET.exec(before);
+      const start = m ? ta.selectionStart - m[0].length : ta.selectionStart;
       const base = this.pos!;
       this.pointing = { start, end: ta.selectionStart, anchor: { ...base }, cur: { ...base } };
     }
@@ -263,7 +271,7 @@ export class CellEditor {
     const ta = this.current();
     if (!this.pointing) {
       const before = ta.value.slice(0, ta.selectionStart);
-      const m = /((?:'[^']*'|[A-Za-z0-9_.]+)!)?(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?)$/.exec(before);
+      const m = REF_BEFORE_CARET.exec(before);
       const start = m ? ta.selectionStart - m[0].length : ta.selectionStart;
       this.pointing = { start, end: ta.selectionStart, anchor: { r: range.r1, c: range.c1 }, cur: { r: range.r2, c: range.c2 } };
     }
