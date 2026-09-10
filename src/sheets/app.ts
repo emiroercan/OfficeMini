@@ -11,11 +11,12 @@ import { writeXlsx } from "./xlsx-write";
 import { csvToWorkbook, blankWorkbook, sheetToCsv, encodeCsv } from "./csv";
 import { StyleResolver } from "./render-style";
 import { Engine } from "./formula/engine";
-import { History, Entry, CellChange, cellsEntry, styleEntry, StylePatch, inputCell, structuralEntry, insertDelete, renameSheet, fillChanges, sortChanges, clearChanges, boundRange, xfWith, SelSnapshot, movedCell } from "./edit";
+import { History, Entry, CellChange, cellsEntry, styleEntry, StylePatch, ValueConverter, inputCell, structuralEntry, insertDelete, renameSheet, fillChanges, sortChanges, clearChanges, boundRange, xfWith, SelSnapshot, movedCell } from "./edit";
 import { copyRange, pasteInternal, pasteExternal, parseExternal, isOurHtml, internalClip, clearInternalClip, cancelCut, PasteMode } from "./clipboard";
-import { setLocale, locale, detectLocale, LOCALES, presets, formatValue, editText, todaySerial, nowSerial, isDateFormat } from "./numfmt";
+import { setLocale, locale, detectLocale, LOCALES, presets, formatValue, editText, parseInput, todaySerial, nowSerial, isDateFormat } from "./numfmt";
 import { CellEditor } from "./celledit";
-import { dataBlock, looksLikeHeader, applyFilters, filterState, clearFilterState, showFilterPopup, displayOf, columnFiltered } from "./filter";
+import { dataBlock, looksLikeHeader, applyFilters, filterState, clearFilterState, showFilterPopup, displayOf, columnFiltered, FormulaRowTest } from "./filter";
+import { shiftFormula } from "./formula/tokens";
 import { printDialog, printSheet } from "./print";
 import { pivotDialog, computePivot, pivotDefs, PivotDef } from "./pivot";
 import { setDarkMode } from "../docx/props";
@@ -298,7 +299,7 @@ let closePending = false;
 
 async function requestClose(): Promise<boolean> {
   if (!app.dirty) return true;
-  if (!F.isTauri || app.settings.autosave === false) return confirmDiscard();
+  if (!F.isTauri || app.settings.autosave === false || !F.closeWasAltF4()) return confirmDiscard();
   if (closePending) return false;
   closePending = true;
   return new Promise<boolean>((resolve) => {
@@ -672,7 +673,7 @@ function applyChanges(changes: CellChange[], label: string) {
 
 function afterModel() {
   app.engine!.recalcAll();
-  if (sheet().autoFilter) applyFilters(sheet(), styles());
+  if (sheet().autoFilter) applyFilters(sheet(), styles(), formulaRowTest());
   grid().invalidate();
   setDirty(true);
   updateFbar();
@@ -711,10 +712,34 @@ function redo() {
 function activeCell(): Cell | undefined { const { r, c } = grid().selection.active; return sheet().cells.get(key(r, c)); }
 function activeStyle() { const cell = activeCell(); return styles().get(cell ? cell.s : (sheet().rows.get(grid().selection.active.r)?.style ?? 0)); }
 
+/**
+ * Choosing a number format re-types the values under it, which is what people mean by it:
+ * "Plain text" turns 1234,5 into the text they would have typed (locale decimal separator,
+ * dates as dates), and any other format parses text back into a number or date through the
+ * same locale-aware reader the cell editor uses. Formulas and blanks are never touched.
+ */
+function formatConverter(code: string): ValueConverter | undefined {
+  const c = code.trim();
+  if (!c) return undefined;
+  const toText = c === "@";
+  const d1904 = wb().date1904;
+  return (cell) => {
+    if (cell.f !== undefined || cell.v === null || isError(cell.v)) return null;
+    if (toText) {
+      if (typeof cell.v === "string") return null;
+      return { ...cell, v: editText(cell.v, styles().get(cell.s).numFmt, d1904) };
+    }
+    if (typeof cell.v !== "string" || cell.v === "") return null;
+    const p = parseInput(cell.v, locale(), d1904);
+    if (typeof p.value === "number" || typeof p.value === "boolean") return { ...cell, v: p.value, rich: undefined };
+    return null;
+  };
+}
+
 function applyStyle(patch: StylePatch, label = "Format") {
   if (app.editor?.active && !app.editor.isFormula()) { /* formatting while editing applies to the cell being edited */ }
   const before = selSnapshot();
-  const e = styleEntry(wb(), sheet(), grid().selection.ranges, patch, label);
+  const e = styleEntry(wb(), sheet(), grid().selection.ranges, patch, label, patch.numFmt !== undefined ? formatConverter(patch.numFmt) : undefined);
   pushEntry(e, before);
   styles().invalidate();
   afterModel();
@@ -1099,6 +1124,24 @@ async function sortDialog() {
   ]);
 }
 
+/**
+ * Evaluator for "Custom formula is". The formula is written against the first data row and
+ * shifted down for every other row, the way Sheets does it, so `=$B2>100` tests each row's
+ * own B. Anything that is not TRUE (including an error) hides the row.
+ */
+function formulaRowTest(): FormulaRowTest {
+  const s = sheet(), anchor = (s.autoFilter?.r1 ?? 0) + 1;
+  return (formula, row) => {
+    const f = formula.replace(/^=/, "").trim();
+    if (!f) return true;
+    try {
+      const shifted = row === anchor ? f : shiftFormula(f, row - anchor, 0);
+      const v = app.engine!.evaluateFormula(shifted, s, row, s.autoFilter?.c1 ?? 0);
+      return v === true || (typeof v === "number" && v !== 0);
+    } catch { return false; }
+  };
+}
+
 function toggleFilter() {
   const s = sheet();
   if (s.autoFilter) {
@@ -1130,7 +1173,7 @@ function filterPopup(c: number, r: number, x: number, y: number) {
   const s = sheet();
   if (!s.autoFilter) return;
   const header = displayOf(s.cells.get(key(r, c)), styles());
-  showFilterPopup({ sheet: s, col: c, styles: styles(), x, y, header, onApply: () => { grid().invalidate(); updateStatus(); const n = s.hiddenRowsByFilter.size; flash(n ? `${n} row${n === 1 ? "" : "s"} hidden by filter` : "Showing all rows"); }, onSort: (asc) => sortBy(c, asc, boundRange(s, s.autoFilter!), true) });
+  showFilterPopup({ sheet: s, col: c, styles: styles(), x, y, header, firstDataRow: s.autoFilter!.r1 + 1, test: formulaRowTest(), onApply: () => { grid().invalidate(); updateStatus(); const n = s.hiddenRowsByFilter.size; flash(n ? `${n} row${n === 1 ? "" : "s"} hidden by filter` : "Showing all rows"); }, onSort: (asc) => sortBy(c, asc, boundRange(s, s.autoFilter!), true) });
 }
 
 function removeDuplicates() {
@@ -1501,7 +1544,7 @@ function colorPopup(anchor: HTMLElement, onPick: (hex: string | null) => void, a
 function buildFindbar() {
   const bar = $("findbar");
   bar.innerHTML = "";
-  const opts = { caseSensitive: false, wholeCell: false, regex: false, formulas: false, allSheets: false, ...(app.settings.sheetFind || {}) };
+  const opts = { caseSensitive: false, wholeCell: false, regex: false, formulas: false, allSheets: false, inSelection: false, ...(app.settings.sheetFind || {}) };
   const input = el("input", { type: "text", placeholder: "Find", "aria-label": "Find" });
   const count = el("span", { class: "count" }, "");
   const prev = el("button", { class: "tb-btn", type: "button" }, "▲");
@@ -1521,6 +1564,7 @@ function buildFindbar() {
   const regexCb = cb("Regex", "Alt+R", () => opts.regex, (v) => (opts.regex = v));
   const formCb = cb("In formulas", "Alt+F", () => opts.formulas, (v) => (opts.formulas = v));
   const allCb = cb("All sheets", "Alt+S", () => opts.allSheets, (v) => (opts.allSheets = v));
+  const selCb = cb("In selection", "Alt+E", () => opts.inSelection, (v) => { opts.inSelection = v; lockScope(); });
   const close = el("button", { class: "tb-btn", type: "button" }, "✕");
   tooltip(close, "Close", "Esc");
   const replaceIn = el("input", { type: "text", placeholder: "Replace with", "aria-label": "Replace with" });
@@ -1530,12 +1574,28 @@ function buildFindbar() {
   tooltip(replAllBtn, "Replace every match", `${MOD}+Enter / Alt+A`);
   const replaceRow = el("span", { style: { display: "inline-flex", gap: "6px", alignItems: "center" } }, replaceIn, replBtn, replAllBtn);
   const hint = el("span", { class: "hint" }, "");
-  bar.append(input, prev, next, count, caseCb.el, cellCb.el, regexCb.el, formCb.el, allCb.el, replaceRow, hint, el("span", { style: { flex: "1" } }), close);
+  bar.append(input, prev, next, count, caseCb.el, cellCb.el, regexCb.el, formCb.el, allCb.el, selCb.el, replaceRow, hint, el("span", { style: { flex: "1" } }), close);
   const persist = () => { app.settings.sheetFind = { ...opts }; F.saveSettings(app.settings); };
 
   let matches: { sheet: number; r: number; c: number }[] = [];
   let cur = -1;
   let matcher: ((text: string) => boolean) | null = null;
+  // "In selection" searches the range the user picked, not whatever is selected at the moment
+  // the box is ticked: stepping through matches collapses the selection to one cell, so the
+  // scope comes from the last selection that covered more than a single cell.
+  let scope: { sheet: number; ranges: Range[] } | null = null;
+  let userRanges: Range[] = [];
+  const snapRanges = () => {
+    const rs = grid().selection.ranges;
+    if (rs.length > 1 || (rs[0] && (rs[0].r1 !== rs[0].r2 || rs[0].c1 !== rs[0].c2))) userRanges = rs.map((r) => ({ ...r }));
+  };
+  const lockScope = () => {
+    snapRanges();
+    const ranges = userRanges.length ? userRanges : grid().selection.ranges.map((r) => ({ ...r }));
+    scope = opts.inSelection ? { sheet: grid().sheetIdx(), ranges } : null;
+  };
+  const inScope = (si: number, r: number, c: number) =>
+    !scope || (si === scope.sheet && scope.ranges.some((rg) => r >= rg.r1 && r <= rg.r2 && c >= rg.c1 && c <= rg.c2));
   const buildMatcher = (): boolean => {
     const q = input.value;
     if (!q) { matcher = null; return true; }
@@ -1554,11 +1614,11 @@ function buildFindbar() {
   const scan = () => {
     matches = [];
     if (!matcher) return;
-    const sheets = opts.allSheets ? wb().sheets.map((s, i) => [s, i] as const) : [[sheet(), grid().sheetIdx()] as const];
+    const sheets = opts.allSheets && !scope ? wb().sheets.map((s, i) => [s, i] as const) : [[sheet(), grid().sheetIdx()] as const];
     for (const [s, i] of sheets) {
       if (s.state !== "visible") continue;
       const keys = Array.from(s.cells.keys()).sort((a, b) => a - b);
-      for (const k of keys) { const cell = s.cells.get(k)!; if (cell.v === null && cell.f === undefined) continue; if (cell.f !== undefined && !opts.formulas) continue; if (matcher(cellText(s, cell))) matches.push({ sheet: i, r: rowOf(k), c: colOf(k) }); }
+      for (const k of keys) { const cell = s.cells.get(k)!; if (cell.v === null && cell.f === undefined) continue; if (cell.f !== undefined && !opts.formulas) continue; const r = rowOf(k), c = colOf(k); if (inScope(i, r, c) && matcher(cellText(s, cell))) matches.push({ sheet: i, r, c }); }
     }
   };
   const showCount = () => {
@@ -1651,7 +1711,7 @@ function buildFindbar() {
     else if (e.key === "Escape") { e.preventDefault(); handle.hide(); }
     else if (e.altKey && !mod) {
       const k = e.key.toLowerCase();
-      const map: Record<string, HTMLInputElement | (() => void)> = { c: caseCb.input, w: cellCb.input, r: regexCb.input, f: formCb.input, s: allCb.input, a: replaceAll };
+      const map: Record<string, HTMLInputElement | (() => void)> = { c: caseCb.input, w: cellCb.input, r: regexCb.input, f: formCb.input, s: allCb.input, e: selCb.input, a: replaceAll };
       const t = map[k];
       if (t) { e.preventDefault(); if (typeof t === "function") t(); else { t.checked = !t.checked; t.dispatchEvent(new Event("change")); } }
     } else if (e.key === "F3") { e.preventDefault(); step(e.shiftKey ? -1 : 1); }
@@ -1668,6 +1728,7 @@ function buildFindbar() {
   const handle = {
     visible: false,
     show(replace: boolean) {
+      lockScope();                 // before anything moves the selection
       bar.hidden = false; this.visible = true;
       replaceRow.style.display = replace ? "inline-flex" : "none";
       // seed with the active cell's text when the box is empty

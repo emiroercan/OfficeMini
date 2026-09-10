@@ -34,6 +34,8 @@ export interface Selection { ranges: Range[]; active: { r: number; c: number }; 
 interface Colors { paper: string; text: string; grid: string; headerBg: string; headerText: string; headerSel: string; accent: string; selFill: string; frozenLine: string; }
 
 const HEADER_W = 46, HEADER_H = 22, FILL_HANDLE = 6, RESIZE_ZONE = 4;
+/** Smallest filter button we still draw, so tiny header cells keep a visible one. */
+const FILTER_BTN_MIN = 9;
 
 export class Grid {
   host: HTMLElement;
@@ -346,7 +348,8 @@ export class Grid {
     const s = this.sheet();
     if (s.autoFilter && r === s.autoFilter.r1 && c >= s.autoFilter.c1 && c <= s.autoFilter.c2) {
       const cr = this.cellRect(r, c);
-      if (px > cr.x + cr.w - 18 * z && py > cr.y + cr.h - 18 * z) return { type: "filterBtn", c, r };
+      const b = this.filterBtnRect(cr.x, cr.y, cr.w, cr.h);
+      if (px >= b.x - 2 && py >= b.y - 2 && px <= b.x + b.s + 2 && py <= b.y + b.s + 2) return { type: "filterBtn", c, r };
     }
     void fr; void fc;
     return { type: "cell", r, c };
@@ -861,14 +864,8 @@ export class Grid {
     if (s.autoFilter && s.autoFilter.r1 >= ra && s.autoFilter.r1 <= rb) {
       const r = s.autoFilter.r1;
       for (let c = Math.max(ca, s.autoFilter.c1); c <= Math.min(cb, s.autoFilter.c2); c++) {
-        const x = ox + this.colStart(c) + this.colWidthPx(c), y = oy + this.rowStart(r) + this.rowHeightPxZ(r);
-        const sz = 14 * z;
-        const filtered = this.filteredCols(c);
-        ctx.fillStyle = filtered ? this.colors.accent : this.colors.headerBg; ctx.strokeStyle = filtered ? this.colors.accent : this.colors.frozenLine; ctx.lineWidth = 1;
-        ctx.fillRect(x - sz - 2, y - sz - 2, sz, sz); ctx.strokeRect(x - sz - 1.5, y - sz - 1.5, sz - 1, sz - 1);
-        ctx.fillStyle = filtered ? "#ffffff" : this.colors.headerText; ctx.beginPath();
-        const cx = x - sz / 2 - 2, cy = y - sz / 2 - 2;
-        ctx.moveTo(cx - 3.5 * z, cy - 2 * z); ctx.lineTo(cx + 3.5 * z, cy - 2 * z); ctx.lineTo(cx, cy + 2.5 * z); ctx.closePath(); ctx.fill();
+        const b = this.filterBtnRect(ox + this.colStart(c), oy + this.rowStart(r), this.colWidthPx(c), this.rowHeightPxZ(r));
+        this.drawFilterButton(b.x, b.y, b.s, this.filteredCols(c));
       }
     }
     // page break lines
@@ -878,6 +875,46 @@ export class Grid {
       for (const c of this.pageBreaks.cols) if (c >= ca && c <= cb + 1) { const x = ox + this.colStart(c); ctx.beginPath(); ctx.moveTo(x + 0.5, oy + this.rowStart(ra)); ctx.lineTo(x + 0.5, oy + this.rowStart(rb) + this.rowHeightPxZ(rb)); ctx.stroke(); }
       ctx.setLineDash([]);
     }
+  }
+
+  /**
+   * Where the filter button sits in a header cell (x/y = cell top-left, w/h = its size). The
+   * button shrinks with the cell and is clamped inside it, so a narrow column or a short
+   * header row still shows one instead of pushing it up into the row above.
+   */
+  private filterBtnRect(x: number, y: number, w: number, h: number): { x: number; y: number; s: number } {
+    const s = Math.max(FILTER_BTN_MIN, Math.min(15 * this.zoom, w - 2, h - 2));
+    return { x: Math.max(x + 1, x + w - s - 2), y: Math.max(y + 1, y + h - s - 2), s };
+  }
+
+  /** Funnel button over a header cell; filled in the accent colour while the column filters. */
+  private drawFilterButton(x: number, y: number, s: number, filtered: boolean) {
+    const ctx = this.ctx;
+    const rad = Math.min(3, s / 4);
+    ctx.beginPath();
+    ctx.moveTo(x + rad, y);
+    ctx.arcTo(x + s, y, x + s, y + s, rad);
+    ctx.arcTo(x + s, y + s, x, y + s, rad);
+    ctx.arcTo(x, y + s, x, y, rad);
+    ctx.arcTo(x, y, x + s, y, rad);
+    ctx.closePath();
+    ctx.fillStyle = filtered ? this.colors.accent : this.colors.headerBg;
+    ctx.fill();
+    ctx.strokeStyle = filtered ? this.colors.accent : this.colors.frozenLine;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // Funnel drawn in a unit box so rim, cone and stem keep their proportions at any size.
+    const px = (u: number) => x + u * s, py = (v: number) => y + v * s;
+    ctx.fillStyle = filtered ? "#ffffff" : this.colors.headerText;
+    ctx.beginPath();
+    ctx.moveTo(px(0.17), py(0.25));
+    ctx.lineTo(px(0.83), py(0.25));
+    ctx.lineTo(px(0.58), py(0.53));
+    ctx.lineTo(px(0.58), py(0.81));
+    ctx.lineTo(px(0.42), py(0.71));
+    ctx.lineTo(px(0.42), py(0.53));
+    ctx.closePath();
+    ctx.fill();
   }
 
   private drawBorders(bd: CellStyle["borders"], x: number, y: number, w: number, h: number) {

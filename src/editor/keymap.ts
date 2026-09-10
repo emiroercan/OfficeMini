@@ -92,7 +92,9 @@ export function shortcuts(actions: AppActions): Shortcut[] {
     { id: "undo", keys: ["Mod-z"], label: "Undo", group: "Edit", command: undo },
     { id: "redo", keys: ["Mod-Shift-z", "Mod-y"], label: "Redo", group: "Edit", command: redo },
     { id: "selectall", keys: ["Mod-a"], label: "Select all", group: "Edit", command: selectAll },
-    { id: "pasteplain", keys: ["Mod-Shift-v"], label: "Paste without formatting", group: "Edit", command: A("pastePlain"), hidden: true },
+    // Returns false on purpose: the webview's own Ctrl+Shift+V paste has to run, and
+    // pastePlain only arms the plugin that strips the formatting off what arrives.
+    { id: "pasteplain", keys: ["Mod-Shift-v"], label: "Paste without formatting", group: "Edit", command: () => { actions.pastePlain(); return false; }, hidden: true },
     // Find
     { id: "find", keys: ["Mod-f"], label: "Find", group: "Find", command: A("find") },
     { id: "replace", keys: ["Mod-h"], label: "Find and replace", group: "Find", command: A("replace") },

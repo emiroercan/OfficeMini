@@ -51,6 +51,8 @@ export interface EditorOptions {
 export const pastePlainKey = new PluginKey("pastePlain");
 let pastePlainNext = false;
 export function requestPlainPaste() { pastePlainNext = true; }
+/** True while a plain paste is armed and no paste event has consumed it yet. */
+export function plainPasteArmed() { return pastePlainNext; }
 
 /** Plugin: Ctrl+click opens links; plain click keeps the caret behaviour. */
 function linkClickPlugin() {

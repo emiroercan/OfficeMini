@@ -141,7 +141,13 @@ export function boundRange(sheet: Sheet, rg: Range, extra = 0): Range {
   return { r1: rg.r1, c1: rg.c1, r2: Math.min(rg.r2, Math.max(sheet.maxRow + extra, rg.r1)), c2: Math.min(rg.c2, Math.max(sheet.maxCol + extra, rg.c1)) };
 }
 
-export function styleEntry(wb: Workbook, sheet: Sheet, ranges: Range[], patch: StylePatch, label = "Format"): Entry {
+/**
+ * Optional re-typing of a cell's value when the format changes (number -> text and back).
+ * Returns the replacement cell, or null to keep the value as it is.
+ */
+export type ValueConverter = (cell: Cell) => Cell | null;
+
+export function styleEntry(wb: Workbook, sheet: Sheet, ranges: Range[], patch: StylePatch, label = "Format", convert?: ValueConverter): Entry {
   const changes: CellChange[] = [];
   const colStyles: { c: number; before: ColInfo[]; }[] = [];
   const rowStyles: { r: number; before: RowInfo | undefined }[] = [];
@@ -157,7 +163,7 @@ export function styleEntry(wb: Workbook, sheet: Sheet, ranges: Range[], patch: S
       const k = key(r, c);
       if (seen.has(k)) continue; seen.add(k);
       const cell = sheet.cells.get(k);
-      if (cell) changes.push({ r, c, cell: { ...cell, s: map(cell.s) } });
+      if (cell) { const conv = convert ? convert(cell) : null; changes.push({ r, c, cell: { ...(conv || cell), s: map(cell.s) } }); }
       else if (!wholeCols && !wholeRows) { const rowStyle = sheet.rows.get(r)?.style || 0; changes.push({ r, c, cell: { v: null, s: map(rowStyle) } }); }
     }
     if (wholeCols) {

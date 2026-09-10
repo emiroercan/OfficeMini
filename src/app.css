@@ -349,6 +349,9 @@ html[data-theme="dark"] .page-hf img { filter: brightness(.92); }
 .filter-popup label { display: flex; align-items: center; gap: 6px; padding: 2px 4px; white-space: nowrap; }
 .filter-popup label span:first-of-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .filter-popup input[type=text] { width: 100%; font: inherit; padding: 4px 6px; border: 1px solid var(--ui-border); border-radius: 4px; background: var(--ui-input); color: var(--ui-fg); }
+.filter-popup .cond-label { color: var(--ui-muted); padding: 2px 0 4px; }
+.filter-popup select { width: 100%; font: inherit; padding: 4px 6px; border: 1px solid var(--ui-border); border-radius: 4px; background: var(--ui-input); color: var(--ui-fg); }
+.filter-popup .cond-args { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
 .filter-popup .row button { font: inherit; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--ui-border); background: var(--ui-input); color: var(--ui-fg); }
 .filter-popup .row button.primary { background: var(--ui-accent); color: #fff; border-color: var(--ui-accent); }
 #statusbar .sb-stats { color: var(--ui-fg); }

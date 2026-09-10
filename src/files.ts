@@ -207,7 +207,7 @@ export interface Settings {
   scrollSpeed?: number;   // wheel/touchpad scroll multiplier (default 2 on Linux, 1 elsewhere)
   sheetZoom?: number;     // Sheets editor zoom
   locale?: string;        // Sheets number/date locale: tr | us | eu | uk
-  sheetFind?: { caseSensitive?: boolean; wholeCell?: boolean; regex?: boolean; formulas?: boolean; allSheets?: boolean };
+  sheetFind?: { caseSensitive?: boolean; wholeCell?: boolean; regex?: boolean; formulas?: boolean; allSheets?: boolean; inSelection?: boolean };
 }
 
 /** CSS pixels per physical inch of the current monitor, or null when unknown. */
@@ -255,6 +255,16 @@ export async function closeWindow() {
   if (w) await w.destroy();
   else window.close();
 }
+
+// Alt+F4 reaches the page before the window manager closes the window, and it is the only
+// way to tell that gesture from the title bar's X (both arrive as the same close request).
+let altF4At = 0;
+if (typeof window !== "undefined") {
+  window.addEventListener("keydown", (e) => { if (e.key === "F4" && e.altKey) altF4At = Date.now(); }, true);
+}
+
+/** True when the close request now being handled came from Alt+F4. */
+export function closeWasAltF4(): boolean { return Date.now() - altF4At < 2000; }
 
 /** Register a close-request handler; return false from the callback to keep the window open. */
 export async function onCloseRequested(handler: () => Promise<boolean>) {

@@ -10,7 +10,7 @@ import { writeDocx } from "./docx/write";
 import { blankDocxBytes } from "./docx/template";
 import { ctx } from "./docx/styles";
 import { markdownToDoc, docToMarkdown } from "./md/markdown";
-import { createEditor, EditorHandle, requestPlainPaste, selectPos, redrawView, setSmartTyping } from "./editor/editor";
+import { createEditor, EditorHandle, requestPlainPaste, plainPasteArmed, selectPos, redrawView, setSmartTyping } from "./editor/editor";
 import { numberingKey } from "./editor/lists";
 import { setDarkMode } from "./docx/props";
 import { AppActions, Shortcut, keyLabel } from "./editor/keymap";
@@ -974,7 +974,12 @@ const actions: ContextActions = {
   insertImage: () => { insertImageFile(); },
   insertTable: () => { insertTableDialog(); },
   goToPage: () => { goToPage(); },
-  pastePlain: () => { requestPlainPaste(); pasteFromClipboard(view(), true); },
+  pastePlain: () => {
+    requestPlainPaste();
+    // The keymap lets the chord through so the webview pastes natively. If it did not (the
+    // flag is still armed because no paste event fired), read the clipboard ourselves.
+    setTimeout(() => { if (plainPasteArmed()) pasteFromClipboard(view(), true); }, 150);
+  },
   selectAllCmd: () => run(selectAll),
   paragraphDialog: () => { showParagraphDialog(); },
   editLink: () => { insertLink(); },
@@ -996,7 +1001,7 @@ let closePending = false;
 
 async function requestClose(): Promise<boolean> {
   if (!app.dirty) return true;
-  if (!F.isTauri || app.settings.autosave === false) return confirmDiscard();
+  if (!F.isTauri || app.settings.autosave === false || !F.closeWasAltF4()) return confirmDiscard();
   if (closePending) return false;   // a close is already running; the notice has the Cancel
   closePending = true;
   return new Promise<boolean>((resolve) => {
