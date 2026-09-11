@@ -12,6 +12,7 @@
     "dev:ext": "vite --mode ext",
     "build:ext": "tsc --noEmit && vite build --mode ext",
     "pack:ext": "npm run build:ext && node scripts/pack-ext.mjs",
+    "test:ext": "npm run build:ext && node scripts/e2e-ext.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

@@ -20,3 +20,7 @@ dist-web
 dist-ext
 
 officemini-extension-*.zip
+
+# Chrome's "Pack extension" output - the .pem is the extension's PRIVATE signing key
+*.crx
+*.pem

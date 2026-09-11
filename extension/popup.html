@@ -8,13 +8,14 @@
         color-scheme: light dark;
         --bg: #ffffff; --fg: #1c1c1e; --muted: #6b6b70; --line: #e2e2e6;
         --accent: #2b6cb0; --btn: #f4f4f6; --btn-hover: #e9e9ee;
+        --warn-bg: #fff7e6; --warn-line: #f0d9a8;
       }
       @media (prefers-color-scheme: dark) {
-        :root { --bg: #1e1e20; --fg: #e8e8ea; --muted: #9a9aa0; --line: #34343a; --accent: #6ea8e0; --btn: #2a2a2e; --btn-hover: #35353b; }
+        :root { --bg: #1e1e20; --fg: #e8e8ea; --muted: #9a9aa0; --line: #34343a; --accent: #6ea8e0; --btn: #2a2a2e; --btn-hover: #35353b; --warn-bg: #33291a; --warn-line: #5c4a26; }
       }
       * { box-sizing: border-box; }
       body {
-        margin: 0; width: 288px; padding: 14px;
+        margin: 0; width: 300px; padding: 14px;
         font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
         background: var(--bg); color: var(--fg);
       }
@@ -35,8 +36,12 @@
       label input { margin: 0; }
       .master { font-weight: 600; }
       .exts { color: var(--muted); font-size: 11px; margin-left: auto; }
-      #groups { margin-left: 22px; }
-      #groups.off { opacity: 0.45; pointer-events: none; }
+      #opts { margin-left: 22px; }
+      #opts.off { opacity: 0.45; pointer-events: none; }
+      .keep { margin-top: 6px; padding-top: 7px; border-top: 1px dashed var(--line); }
+      .warn { margin-top: 12px; padding: 9px 10px; border-radius: 6px; background: var(--warn-bg); border: 1px solid var(--warn-line); }
+      .warn p { margin: 0 0 8px; }
+      .warn button { width: 100%; }
       p.note { color: var(--muted); font-size: 11px; margin: 10px 0 0; }
     </style>
   </head>
@@ -60,7 +65,17 @@
     <hr />
 
     <label class="master"><input type="checkbox" id="enabled" /> Open downloads in the editor</label>
-    <div id="groups"></div>
+    <div id="opts">
+      <div id="groups"></div>
+      <label class="keep"><input type="checkbox" id="keep" /> Keep a copy in Downloads too</label>
+    </div>
+
+    <div class="warn" id="access" hidden>
+      <p>Export buttons, and files dragged into Chrome, need <b>Allow access to file URLs</b>. Plain links work without it.</p>
+      <button id="access-btn">Turn it on</button>
+    </div>
+
+    <p class="note">Drag a file onto an OfficeMini tab to edit it in place. Dropped anywhere else in Chrome, it opens as a copy that Ctrl+S saves somewhere new.</p>
     <p class="note">Files stay on your machine. Nothing is uploaded, and the editor never sends the document anywhere.</p>
   </body>
   <script type="module" src="popup.js"></script>

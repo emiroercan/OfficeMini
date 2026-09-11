@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>OfficeMini needs one switch</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f6f8; --card: #ffffff; --fg: #1c1c1e; --muted: #6b6b70; --line: #e2e2e6;
+        --accent: #2b6cb0;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root { --bg: #161618; --card: #1e1e20; --fg: #e8e8ea; --muted: #9a9aa0; --line: #34343a; --accent: #6ea8e0; }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px;
+        font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: var(--bg); color: var(--fg);
+      }
+      main {
+        width: 100%; max-width: 520px; padding: 28px 30px; border-radius: 12px;
+        background: var(--card); border: 1px solid var(--line);
+      }
+      img { width: 40px; height: 40px; display: block; margin-bottom: 14px; }
+      h1 { font-size: 19px; font-weight: 600; margin: 0 0 10px; }
+      p { margin: 0 0 12px; }
+      .muted { color: var(--muted); }
+      ol { margin: 14px 0 20px; padding-left: 22px; }
+      li { margin: 4px 0; }
+      button {
+        padding: 9px 16px; border-radius: 7px; border: 1px solid var(--accent);
+        background: var(--accent); color: #fff; font: inherit; font-weight: 500; cursor: pointer;
+      }
+      button:hover { filter: brightness(1.07); }
+      #status { margin: 16px 0 0; font-size: 13px; color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="icons/48.png" alt="" />
+      <h1>One switch, then <span id="name">your file</span> opens</h1>
+      <p>OfficeMini opens a download by reading the file Chrome has just saved. That is the only way
+        that works for export buttons, and for spreadsheets a site builds on the page.</p>
+      <p class="muted">Chrome keeps this off for every extension until you turn it on. It lets
+        OfficeMini read files you download or open in Chrome; it does not send them anywhere.</p>
+      <ol>
+        <li>Click <b>Open OfficeMini's settings</b>.</li>
+        <li>Turn on <b>Allow access to file URLs</b>.</li>
+        <li>Come back here. The file opens by itself.</li>
+      </ol>
+      <button id="go">Open OfficeMini's settings</button>
+      <p id="status">Waiting for the switch…</p>
+    </main>
+    <script type="module" src="file-access.js"></script>
+  </body>
+</html>

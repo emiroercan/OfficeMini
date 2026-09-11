@@ -1,25 +1,24 @@
 # OfficeMini for Chrome — the extension
 
-State as of 2026-09-10, on top of v0.3.3. This is success criterion 4 of `docs/WEB-GOALS.md`:
+State as of 2026-09-11, on top of v0.3.4. This is success criterion 4 of `docs/WEB-GOALS.md`:
 the part of the browser build that the desktop app cannot do.
 
 ## What it does
 
-Click a `.docx` or `.xlsx` link and it opens in the editor, in a tab, instead of landing in the
-Downloads folder. The file is never written to disk unless you ask for it — `Ctrl+S` raises
-Save as…, and from that point on it saves back to the file you chose, in place, like the
-desktop app.
-
-Three ways in:
+Download a Word or Excel file and it opens in the editor, in a tab — whether it came from a plain
+link, an export button, or a spreadsheet the site built on the page. Once the editor has it, the
+copy in Downloads is removed, unless *Keep a copy in Downloads too* is on. `Ctrl+S` raises
+Save as…, and from then on saves back to the file you chose, in place, like the desktop app.
 
 | | |
 |---|---|
-| A download Chrome was about to start | cancelled and opened in the editor |
+| A download of a `.docx`, `.xlsx`, `.csv`… | opened in the editor once Chrome has it |
+| A file from your computer dropped onto any tab | opened as a copy; `Ctrl+S` saves somewhere new |
+| A file dropped onto an OfficeMini tab | opened, and `Ctrl+S` saves back to it |
 | Right-click a link → *Open link in OfficeMini* | opened without downloading |
 | The toolbar button | new document, new spreadsheet, or the picker |
 
-Nothing is uploaded. The document is fetched by the extension from the site you were already
-on, and stays in the browser.
+Nothing is uploaded. Files stay on the machine.
 
 ## Install it for yourself
 
@@ -27,59 +26,79 @@ on, and stays in the browser.
 npm run build:ext
 ```
 
-Then in Chrome: `chrome://extensions` → turn on **Developer mode** → **Load unpacked** →
-select the `dist-ext` folder. It appears as *OfficeMini*; pin it to the toolbar if you want the
-popup one click away.
+(In Windows PowerShell with script execution disabled, `npm.cmd run build:ext`.)
 
-To try it immediately, open any page with a `.docx` link and click it — for example a raw file
-link from a GitHub repository. The download bubble may flash for an instant before the tab
-opens; that is the cancellation, and no file is left behind.
+Then in Chrome: `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → select
+the `dist-ext` folder. Then open the extension's **Details** and turn on **Allow access to file
+URLs**. That is the one switch it needs for export buttons, blob downloads and local files;
+plain links work without it. While it is off the popup says so, and the first file that needs it
+opens a page explaining the switch — the file then opens by itself once it is on.
 
-After a code change, `npm run build:ext` again and press the reload arrow on the extension's
-card. A change to `background.js` also needs that reload; a change under `src/` only needs the
-tab reopened.
+After a code change, build again and press the reload arrow on the extension's card.
 
-`npm run dev:ext` serves the same build on `localhost:1420` for quick iteration on the editor
-itself, but the extension plumbing (downloads, context menu, popup) only exists in Chrome.
+## How it works
 
-## How the hand-off works
+### Downloads
 
-The awkward part is that a download URL is often single-use — Drive, SharePoint and most
-`?export=` endpoints will not serve the same URL twice. So the bytes are fetched **once**, by
-the service worker, at the moment the download is cancelled and while the site's cookies still
-apply. They are parked in the origin private file system under `inbox/<token>`, and the editor
-tab — same `chrome-extension://` origin, so the same OPFS — picks them up by token.
+Chrome does the download exactly as it would without the extension. When it completes, the
+service worker reads the file Chrome wrote — `fetch()` on its `file://` URL, which a worker may
+do once file access is on — parks the bytes in the origin private file system under
+`inbox/<token>`, and opens the editor. The editor tab shares the `chrome-extension://` origin,
+so it picks them up by token.
 
 ```
-link click
-   │
-   ├─ chrome.downloads.onCreated              extension/background.js
-   │     cancel + erase              nothing reaches the Downloads folder
-   │     fetch(url, credentials)     one request, while it is still valid
-   │     OPFS  inbox/<token>
-   │
-   └─ tabs.create  index.html?inbox=<token>&name=Report.docx&src=<url>
-         │
-         ├─ adoptEntryUrl()                   src/files-web.ts
-         │     reads inbox/<token>, registers "/net/1/Report.docx",
-         │     rewrites the query to ?file=/net/1/Report.docx
-         │
-         └─ boot.ts → Words or Sheets, unchanged
+download completes                      chrome.downloads.onChanged    extension/background.js
+   │   (its real name is known by now, whatever the URL said)
+   ├─ fetch(file:///…/Downloads/Export.xlsx)        one read of what Chrome saved
+   ├─ OPFS  inbox/<token>
+   ├─ tabs.create  index.html?inbox=<token>&name=Export.xlsx&src=<url>
+   │     └─ adoptEntryUrl() → "/net/1/Export.xlsx" → Words or Sheets, unchanged
+   └─ removeFile + erase                            unless "keep a copy" is on
 ```
 
-`src=` is the fallback: if the service worker's fetch failed, the page tries the URL itself.
-A context-menu click passes only `src=`.
+**Why not intercept sooner.** The first version cancelled the download and fetched the URL again
+itself. That handled a plain link and nothing else: an export endpoint names its file only in
+`Content-Disposition`, unknown until the download is under way; a `blob:` URL belongs to the
+page that made it; and many export URLs work exactly once. Admin panels use all three. Reading
+what Chrome saved is the one approach that works for every case, and it never makes a second
+request.
 
-The inbox copy is **kept** after the editor reads it, so reloading the tab reopens the same
-document rather than re-requesting a spent URL. `sweepInbox()` deletes copies older than a day
-on the next browser start.
+The copy in Downloads is removed only after the bytes are safely in the inbox. The inbox copy is
+kept, so reloading the tab reopens the document; `sweepInbox()` deletes copies older than a day.
+
+### Local files
+
+A file dropped onto a tab that does not handle drops makes Chrome navigate to its `file://` URL,
+and that becomes a download — a second copy in Downloads. `onCreated` cancels the copy (the
+original is already on disk, so nothing is lost), reads the original, and opens it the same way.
+
+### Without file access
+
+- **A plain link** is fetched again from its URL. The bytes are checked first — a zip format has
+  to start with `PK`, a CSV must not be an HTML error page — before anything is opened or removed.
+- **Anything else** — an export endpoint that will not serve twice, a blob, a local file — opens
+  `file-access.html`, which explains the switch and links to the extension's settings. The file
+  is remembered in `chrome.storage.local` for fifteen minutes and opened as soon as the switch is
+  on: the worker checks on every start, the explainer asks when it sees the switch flip, and so
+  does the popup when it is opened. A shared in-flight promise stops two of those opening it twice.
+
+### Dropped files (onto an OfficeMini tab)
+
+Chromium's `DataTransferItem.getAsFileSystemHandle()` returns a real `FileSystemFileHandle`, and
+the drop is itself the user gesture that a write-permission prompt needs — so a dropped document
+opens *and* saves back to where it came from, exactly like one chosen from the picker. Browsers
+without it fall back to the plain `File`, which opens read-only as a `/net/` path.
+
+Preventing the browser's default matters as much as the feature: without it, dropping a file on
+the editor navigates the tab to that file and throws the open document away.
 
 ### `/net/` paths
 
-A document from a link has no file behind it, but the rest of the app only ever deals in path
-strings. So it gets one — `/net/1/Report.docx` — alongside the `/web/…` (granted handle) and
-`/opfs/…` (recovery copy) paths that `files-web.ts` already invented. `basename`, `extname` and
-`dirname` behave; `readFile` serves the bytes; `writeFile` refuses with a message.
+A document from a download has no file behind it that the editor may write to, but the rest of
+the app only ever deals in path strings. So it gets one — `/net/1/Report.docx` — alongside the
+`/web/…` (granted handle) and `/opfs/…` (recovery copy) paths that `files-web.ts` already
+invented. `basename`, `extname` and `dirname` behave; `readFile` serves the bytes; `writeFile`
+refuses with a message.
 
 Three places know that a path can be remote, all of them folded away in the desktop build:
 
@@ -95,53 +114,65 @@ that copies `extension/` and the app's icons in after the bundle. `__WEB_BUILD__
 both, so there is no third code path to keep working.
 
 ```
-extension/manifest.json    MV3
-extension/background.js    the service worker: interception and the hand-off
-extension/settings.js      which file types to take over (shared with the popup)
-extension/popup.js/.html   the toolbar popup
+extension/manifest.json          MV3
+extension/background.js          the service worker: downloads, local files, the hand-off
+extension/settings.js            which file types to take over (shared with the popup)
+extension/popup.js/.html         the toolbar popup
+extension/file-access.js/.html   the page that explains "Allow access to file URLs"
 ```
 
 ## Settings
 
-The popup has a master switch and four groups: Word, Excel, CSV/TSV, and Markdown/text.
-Markdown and text are off by default — the browser shows those links rather than downloading
-them, so the setting would mostly catch files someone deliberately asked to keep. Settings live
-in `chrome.storage.sync`, so they follow the Chrome profile.
+The popup has a master switch, four groups — Word, Excel, CSV/TSV, Markdown/text — and *Keep a
+copy in Downloads too*, which is off by default: the point is "open it instead of downloading
+it". Markdown and text are off by default too — the browser shows those links rather than
+downloading them, so the setting would mostly catch files someone deliberately asked to keep.
+Settings live in `chrome.storage.sync`, so they follow the Chrome profile.
 
 ## Known gaps
 
-1. **`blob:` downloads are left alone.** A page that builds the file in JavaScript and saves it
-   from a blob URL cannot be intercepted: the URL belongs to that page and a service worker
-   cannot fetch it. Those still download normally. A content script could relay the bytes; that
-   is the only reason this extension would ever need one.
-2. **Two requests to the server.** The download is cancelled and then re-fetched. Sites that
-   count downloads will count one; sites that invalidate the URL on first *response* rather
-   than first request would break, and none tested do.
-3. **A brief flash in the download bubble** before the cancel lands. Cosmetic.
-4. **One document per tab.** Inherited from the web build — gap 3 in `docs/WEB-HANDOFF.md`.
-5. **Markdown side files.** Saving a `.md` with images still cannot write `name_files/` next to
+1. **File access is a manual switch.** Chrome has no API to request it. `file-access.html` walks
+   through it, and plain links work without it.
+2. **A file that fails to open has already left Downloads** when *keep a copy* is off: the copy is
+   removed once the bytes are parked, not once the editor has parsed them. Turn the extension's
+   switch off and download it again, or keep copies.
+3. **"Ask where to save each file"**: with that Chrome setting on and *keep a copy* off, a file
+   saved to a folder you chose is removed once it opens. Turn *keep a copy* on if you use it.
+4. **The download shows in the download bubble** until it is removed. Cosmetic.
+5. **One document per tab.** Inherited from the web build — gap 3 in `docs/WEB-HANDOFF.md`.
+6. **Markdown side files.** Saving a `.md` with images still cannot write `name_files/` next to
    the document — gap 2 in `docs/WEB-HANDOFF.md`.
-6. **Chromium only**, and deliberately so: this is a Chrome extension.
+7. **Chromium only**, and deliberately so: this is a Chrome extension.
+
+## Testing
+
+`npm run test:ext` builds the extension and runs `scripts/e2e-ext.mjs`: the real extension in
+real Edge and Chrome, driven over the DevTools protocol, with generated fixtures and real mouse
+clicks. It covers every download shape above, local files, *keep a copy*, the master switch, and
+the whole file-access-off path including the file opening by itself once the switch goes on.
+`docs/WEB-TESTS.md` §7 has the details and the reference result.
 
 ## Before the Chrome Web Store
 
 The prototype is installable and complete; publishing it is a separate list.
 
-- **`host_permissions: ["<all_urls>"]` is the hard part.** It shows as *"Read and change all
-  your data on all websites"* and reviewers ask for a justification. It is genuinely needed —
-  the file could be on any site — but the polite version is `optional_host_permissions`,
-  requested per-site from the popup with `chrome.permissions.request()` on a click. Worth doing
-  before submitting; it turns the install-time warning into a per-site one.
-- **Permission justifications** to write for the listing: `downloads` (to cancel the download
-  being replaced), `contextMenus` (the right-click item), `storage` (which file types to take
-  over), host access (to fetch the document the link points at).
+- **Host permission.** `<all_urls>` shows as *"Read and change all your data on all websites"*.
+  Since the redesign it only serves the no-file-access fallback and the context menu — the main
+  path reads a local file. Worth checking whether `file:///*` plus `optional_host_permissions`,
+  requested per site from the popup with `chrome.permissions.request()`, is enough; that would
+  take the install-time warning away.
+- **File access** cannot be requested by the extension. The listing should say that it asks for
+  *Allow access to file URLs*, and why.
+- **Permission justifications** to write for the listing: `downloads` (read a finished download,
+  remove the copy, cancel the duplicate of a local file), `contextMenus` (the right-click item),
+  `storage` (settings, and a file waiting on the switch), host access (the fallback fetch).
 - **Data disclosure**: nothing is collected or transmitted. The listing has to say so
   explicitly, and a privacy policy URL is required once any permission is declared.
 - **No remote code.** Everything ships in the package; the bundle has no `eval` or `new
   Function` and loads nothing from the network. Checked — this is what makes MV3's default
   content security policy work with no override in the manifest.
-- **Single purpose**: "open Office documents from the web in an editor" is one purpose, which
-  is what the policy asks for.
+- **Single purpose**: "open Office documents you download in an editor" is one purpose, which is
+  what the policy asks for.
 - **Assets**: a 128px icon (present), at least one 1280×800 screenshot, a short description.
 - `npm run pack:ext` produces `officemini-extension-<version>.zip` with the manifest at the
   root, which is the shape the store's uploader wants. Bump `version` in `package.json` for
@@ -150,5 +181,5 @@ The prototype is installable and complete; publishing it is a separate list.
 ## Rules this must keep
 
 From `docs/WEB-HANDOFF.md`, unchanged and non-negotiable: **the desktop app's build must not
-change.** `docs/WEB-TESTS.md` §1 is the check, and it now compares the desktop bundle against
-`HEAD` byte-for-byte rather than only grepping it.
+change.** `docs/WEB-TESTS.md` §1 is the check, and it compares the desktop bundle against `HEAD`
+byte-for-byte rather than only grepping it.

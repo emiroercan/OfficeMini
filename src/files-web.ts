@@ -122,6 +122,47 @@ export async function adoptEntryUrl(): Promise<void> {
   history.replaceState(null, "", location.pathname + "?" + p.toString());
 }
 
+// ---- dropped files ----------------------------------------------------------
+
+/**
+ * Files dropped on the window. In Chromium `getAsFileSystemHandle()` hands back a real handle,
+ * so a dropped document opens *and* can be saved back to where it came from - the drop itself
+ * is the user gesture that the write permission prompt needs. Elsewhere it falls back to the
+ * plain File, which opens read-only and turns Ctrl+S into Save as... .
+ *
+ * Preventing the browser's default matters as much as the feature: without it, dropping a file
+ * on the editor navigates the tab to that file and throws away the open document.
+ */
+export function onFileDrop(cb: (paths: string[]) => void, hover?: (over: boolean) => void): void {
+  interface DropItem extends DataTransferItem { getAsFileSystemHandle?(): Promise<{ kind: string } | null> }
+  // Only files: a drag inside the document is ProseMirror's business, not ours.
+  const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types || []).includes("Files");
+  let depth = 0;
+  window.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+  window.addEventListener("dragenter", (e) => { if (hasFiles(e) && ++depth === 1) hover?.(true); });
+  window.addEventListener("dragleave", () => { if (depth && --depth === 0) hover?.(false); });
+  window.addEventListener("drop", async (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth = 0;
+    hover?.(false);
+    const items = Array.from((e.dataTransfer?.items || []) as unknown as DropItem[]);
+    const paths: string[] = [];
+    for (const item of items) {
+      if (item.kind !== "file") continue;
+      try {
+        if (item.getAsFileSystemHandle) {
+          const h = await item.getAsFileSystemHandle();
+          if (h && h.kind === "file") { paths.push(register(h as unknown as Handle)); continue; }
+        }
+      } catch { /* fall through to the read-only path */ }
+      const f = item.getAsFile();
+      if (f) paths.push(registerRemote(f.name, null, new Uint8Array(await f.arrayBuffer())));
+    }
+    if (paths.length) cb(paths);
+  });
+}
+
 // ---- origin private file system (recovery copies) ---------------------------
 
 async function opfsSub(name: string, create = true): Promise<FileSystemDirectoryHandle> {

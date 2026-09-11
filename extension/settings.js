@@ -12,12 +12,16 @@ export const GROUPS = {
 
 // Markdown and text are off by default: the browser shows those links rather than downloading
 // them, so the setting would mostly catch files someone deliberately asked to keep.
-export const DEFAULTS = { enabled: true, groups: { word: true, excel: true, csv: true, text: false } };
+//
+// keepCopy is off by default because the point of the extension is "open it instead of
+// downloading it". The copy is only removed once the editor holds its own, and turning this on
+// leaves every download exactly where Chrome put it.
+export const DEFAULTS = { enabled: true, keepCopy: false, groups: { word: true, excel: true, csv: true, text: false } };
 
 export async function loadSettings() {
   const got = await chrome.storage.sync.get(KEY);
   const s = got[KEY] || {};
-  return { enabled: s.enabled !== false, groups: { ...DEFAULTS.groups, ...(s.groups || {}) } };
+  return { enabled: s.enabled !== false, keepCopy: s.keepCopy === true, groups: { ...DEFAULTS.groups, ...(s.groups || {}) } };
 }
 
 export async function saveSettings(s) {

@@ -38,7 +38,8 @@ src/updater.ts     3
 | Recovery offered on the next start | works within a session; see *Handle persistence* |
 | Print | unchanged — it was always `window.print()` |
 | Everything else (editing, formulas, filters, find…) | unchanged, it never touched Tauri |
-| Chrome extension: a `.docx`/`.xlsx` link opens in the editor, not Downloads | works, `docs/WEB-EXTENSION.md` |
+| Chrome extension: a downloaded `.docx`/`.xlsx` — link, export button or blob — opens in the editor | works, `docs/WEB-EXTENSION.md` |
+| Files dropped on the window | works in the browser builds too, with a writable handle |
 
 Verified end to end by opening a real 61 KB `.xlsx` through a `FileSystemFileHandle`, editing a
 cell and saving: 63,506 bytes written back to the same handle, still a valid zip, re-reading the
@@ -139,9 +140,10 @@ build of `HEAD` byte-for-byte, not just greps it.
 5. **`src/updater.ts`** is dead weight in the web build (it early-returns on `isTauri`), and it
    drags ~296 KB of shared chunk. See the note under *Worth doing early*. In the extension it is
    pure dead weight — Chrome does the updating.
-6. **`blob:` downloads cannot be intercepted** by the extension: the URL belongs to the page
-   that made it and a service worker cannot fetch it. Those still download normally. This is
-   the only thing that would justify giving the extension a content script.
+6. **The extension needs *Allow access to file URLs*** for export buttons, blob downloads and
+   local files: it opens a download by reading the file Chrome saved, and Chrome has no API to
+   request that switch. Plain links work without it, and `extension/file-access.html` explains
+   the rest and finishes the job once the switch is on.
 
 ## Not goals (from the owner, explicitly)
 
@@ -192,3 +194,11 @@ is testable against the desktop app's behaviour, which is the reference implemen
   bytes to two desktop chunks; `if (__WEB_BUILD__) …` made them byte-identical again.
 - **Do not link `node_modules` into a comparison worktree.** `git worktree remove --force`
   follows a Windows junction and deletes the real directory behind it.
+- **Stubbed extension tests prove very little.** A `chrome` stub accepted the first design, which
+  then failed every export button, blob download and local file in a real browser. Test the
+  extension in a browser: `npm run test:ext`.
+- **Branded Chrome ignores `--load-extension`** since 137. `Extensions.loadUnpacked` over
+  `--remote-debugging-pipe` (with `--enable-unsafe-extension-debugging`) still works, and the
+  debugging port can stay open alongside. Edge still honours the flag.
+- **Chrome disables a pipe-loaded extension when its file access is switched off**
+  (`unsupportedDeveloperExtension`); it comes back when switched on. Test that path in Edge.

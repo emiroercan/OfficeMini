@@ -325,6 +325,7 @@ export async function onCloseRequested(handler: () => Promise<boolean>) {
 
 /** Files dropped on the window (Tauri) -> callback with paths. */
 export async function onFileDrop(cb: (paths: string[]) => void, hover?: (over: boolean) => void) {
+  if (isWeb) { web.onFileDrop(cb, hover); return; }
   const w = await appWindow();
   if (!w) return;
   await w.onDragDropEvent((event) => {

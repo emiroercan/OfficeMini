@@ -171,8 +171,46 @@ Synthetic `KeyboardEvent`s on `#keyproxy` drive the Sheets keyboard; ProseMirror
 
 ## 7. The extension
 
-`docs/WEB-EXTENSION.md` describes what is being tested. The page half runs against
-`npm run dev:ext` in the browser pane; the Chrome half needs the unpacked extension.
+`docs/WEB-EXTENSION.md` describes what is being tested.
+
+**The real thing, first.** Everything the extension does happens in Chrome's own machinery —
+downloads, `file://` reads, a worker that is stopped between events — and none of it exists in a
+page. The stubbed service-worker checks that used to live here passed while export buttons, blob
+downloads and local files all failed in a real browser. So the test is the real extension in a
+real browser:
+
+```bash
+npm run test:ext                 # build, then scripts/e2e-ext.mjs in every Chromium found
+node scripts/e2e-ext.mjs edge    # one browser: edge | chrome
+```
+
+It serves its own page and generated fixtures (no personal documents), clicks with real mouse
+events over the DevTools protocol, and checks, for every case, which editor tab opened, what the
+editor loaded (cell A1), what is left in the Downloads folder, and that no local original was
+touched:
+
+| phase | cases |
+|---|---|
+| file access on | plain link; export endpoint (`Content-Disposition`, `octet-stream`, no extension in the URL); `.csv` link; blob revoked at once; blob revoked later; a `.pdf` left alone; a local `.xlsx` and `.csv` opened into a tab |
+| keep a copy | the copy stays in Downloads |
+| switched off | nothing is touched |
+| file access off | plain links fetched again; a blob and a local file open the explainer |
+| access turned on | the waiting file opens with no further action |
+
+PASS: every row. Reference result: 17 of 17 in Edge 152; 12 of 12 in Chrome 152, which skips the
+last two phases (below).
+
+- **Branded Chrome ignores `--load-extension`** since version 137. The script loads the extension
+  there with `Extensions.loadUnpacked` over `--remote-debugging-pipe`, keeping the port open for
+  everything else.
+- **Chrome disables a pipe-loaded extension when file access is switched off**
+  (`disableReasons.unsupportedDeveloperExtension`), so the file-access phases run in Edge only. A
+  "Load unpacked" install is not affected.
+- The worker is found by attaching to service-worker targets and asking each for its manifest
+  name. After a reload it may be asleep; opening the popup wakes it.
+
+**The page half** — everything after the editor tab opens — is ordinary page code, and can still
+be checked in the browser pane against `npm run dev:ext`.
 
 **The entry points.** Both turn into an ordinary `?file=` before either editor loads.
 
@@ -213,42 +251,34 @@ window.om.loadXlsx(new Uint8Array(await (await target.getFile()).arrayBuffer()))
 JSON.parse(localStorage['officemini.settings']).recent   // PASS: no "/net/" entry was added
 ```
 
-**The service worker's rules**, with a stubbed `chrome`. `extOf`, `nameFromUrl` and `targetName`
-are exported from `background.js` for this.
+**Dropped files** — a drop must open the file *and* keep the handle, so `Ctrl+S` writes in place
+and never raises the picker. Synthesise the item Chromium would hand over:
 
 ```js
-globalThis.chrome = { /* storage.sync, downloads, runtime, contextMenus, tabs stubs */ };
-const bg = await import('/extension/background.js');
-const s  = await import('/extension/settings.js');
-const active = s.activeExtensions(await s.loadSettings());
+const h = await (await navigator.storage.getDirectory()).getFileHandle('dropped.xlsx', { create: true });
+// …write a real workbook into h…
+const item = { kind: 'file', getAsFileSystemHandle: async () => h, getAsFile: () => null };
+const ev = new Event('drop', { bubbles: true, cancelable: true });
+Object.defineProperty(ev, 'dataTransfer', { value: { types: ['Files'], items: [item] } });
+window.dispatchEvent(ev);
 
-bg.targetName({ url: 'https://x/a/Report.docx', filename: 'C:\\Users\\a\\Downloads\\Report.docx' })  // "Report.docx"
-bg.targetName({ url: 'https://drive/export?id=9', filename: '', mime: '...spreadsheetml.sheet' })    // "export.xlsx"
-bg.targetName({ url: 'https://x/get/Q3%20Plan.xlsx?token=abc', filename: '' })                       // "Q3 Plan.xlsx"
-active.has('pdf') || active.has('zip')   // PASS: false - only Office types are taken over
-active.has('md')                         // PASS: false by default
+ev.defaultPrevented          // PASS: true - the tab must not navigate to the file and lose the document
+window.om.app.path           // PASS: "/web/1/dropped.xlsx" - a handle, not "/net/"
+window.showSaveFilePicker = async () => { throw new Error('must not be reached'); };
+await window.om.save();      // PASS: true, and the picker was never called
 ```
 
-Then drive the whole handler, which must cancel, erase, stash and open exactly one tab:
+**In Chrome, by hand**, once, because the test cannot flip a switch in your own profile:
 
-```js
-await globalThis.__onCreated({ id: 11, url: location.origin + '/samples/sheets/<file>.xlsx', filename: 'x.xlsx' });
-// PASS: cancel(11) and erase(11) both called; one tabs.create; its ?inbox= token names an OPFS
-//       file whose byte length equals the file on the server; ?src= is kept as the fallback.
-await globalThis.__onCreated({ id: 12, url: 'https://x/manual.pdf', filename: 'manual.pdf' });   // PASS: ignored
-await globalThis.__onCreated({ id: 13, url: 'blob:http://x/abc', filename: 'x.docx' });          // PASS: ignored
-```
-
-**In Chrome, by hand**, because none of the above touches the parts only Chrome has:
-
-- Load `dist-ext` unpacked, click a real `.docx` link: a tab opens with the document, and the
-  Downloads folder gets nothing. That is the whole claim.
+- Load `dist-ext` unpacked. Download an export from a real admin panel: it opens in the editor
+  and nothing is left in Downloads.
+- With *Allow access to file URLs* off, do the same: the explainer appears; turn the switch on,
+  and the file opens.
 - Right-click a link → *Open link in OfficeMini*.
-- `Ctrl+S`, choose a location, confirm the file opens in Word. `Ctrl+S` again writes in place.
-- Turn the master switch off in the popup: the same link downloads normally again.
-- A `.pdf` and a `.zip` link still download.
-- Reload the editor tab with unsaved changes: the browser's own prompt appears first, and after
-  reloading the document is still there.
+- `Ctrl+S`, choose a location, confirm Word opens the file. `Ctrl+S` again writes in place.
+- Drag a `.csv` from Explorer onto an ordinary tab: it opens as a copy. Drag it onto an
+  OfficeMini tab: it opens, and `Ctrl+S` saves back to it without asking.
+- Turn the master switch off: downloads behave as if the extension were not there.
 
 ## 8. Before calling a change done
 
@@ -256,5 +286,6 @@ await globalThis.__onCreated({ id: 13, url: 'blob:http://x/abc', filename: 'x.do
 2. §2 backend round trip.
 3. §3 stubbed open/save, plus the manual picker check if the picker path changed.
 4. §4 on at least one `.docx` and one `.xlsx`.
-5. §7 if anything under `extension/`, `files-web.ts` or either editor's `save()` moved.
+5. §7 — `npm run test:ext` — if anything under `extension/`, `files-web.ts` or either editor's
+   `save()` moved.
 6. `npx tsc --noEmit`.
