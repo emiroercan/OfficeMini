@@ -212,19 +212,28 @@ export function parseFormat(code: string): Section[] {
 
 function pad(n: number, len: number): string { let s = String(Math.abs(Math.trunc(n))); while (s.length < len) s = "0" + s; return s; }
 
+/**
+ * General: plain decimal notation at every magnitude - never 1.23457E+14. Fifteen significant
+ * digits is all a double holds reliably, so binary noise (0.1 + 0.2) rounds away while the real
+ * figure survives in full. The exponent toPrecision may produce is expanded by hand rather than
+ * through toLocaleString, whose fraction-digit ceiling varies between the webviews we ship on.
+ */
 function fmtGeneral(v: number): string {
   if (!isFinite(v)) return isError({ e: "" }) ? "#NUM!" : String(v);
   if (v === 0) return "0";
-  const abs = Math.abs(v);
-  let s: string;
-  if (abs >= 1e11 || abs < 1e-9) s = v.toExponential(5).replace(/\.?0+e/, "e").replace("e+", "E+").replace("e-", "E-");
-  else {
-    // up to 11 significant digits like Excel's General
-    const digits = Math.max(0, 10 - Math.floor(Math.log10(abs)));
-    s = v.toFixed(Math.min(digits, 20));
-    if (s.includes(".")) s = s.replace(/\.?0+$/, "");
+  let s = v.toPrecision(15);
+  let sign = "";
+  if (s[0] === "-") { sign = "-"; s = s.slice(1); }
+  const m = /^(\d+)(?:\.(\d+))?e([+-]\d+)$/.exec(s);
+  if (m) {
+    const digits = m[1] + (m[2] || "");
+    const point = m[1].length + parseInt(m[3], 10);   // where the decimal point falls in digits
+    if (point <= 0) s = "0." + "0".repeat(-point) + digits;
+    else if (point >= digits.length) s = digits + "0".repeat(point - digits.length);
+    else s = digits.slice(0, point) + "." + digits.slice(point);
   }
-  return s.replace(".", current.decimal);
+  if (s.includes(".")) s = s.replace(/\.?0+$/, "");
+  return (sign + s).replace(".", current.decimal);
 }
 
 function groupInt(intStr: string): string {
@@ -273,7 +282,7 @@ function renderNumber(sec: Section, v: number): string {
 }
 
 function renderDate(sec: Section, v: number, date1904: boolean): string {
-  if (v < 0 || v >= 2958466) return "#".repeat(8);
+  if (v < 0 || v >= 2958466) return fmtGeneral(v);   // no date Excel can show: the number itself, never ####
   const totalSec = Math.round(v * 86400);
   const d = serialToDate(Math.floor(v), date1904);
   const daySec = ((totalSec % 86400) + 86400) % 86400;

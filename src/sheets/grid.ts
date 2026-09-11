@@ -42,6 +42,14 @@ const HEADER_W = 46, HEADER_H = 22, FILL_HANDLE = 6, RESIZE_ZONE = 5;
 const DEFAULT_ROWS = 1000, DEFAULT_COLS = 26;
 /** Smallest filter button we still draw, so tiny header cells keep a visible one. */
 const FILTER_BTN_MIN = 9;
+/**
+ * A press on a column or row border has to move this far before it is a resize. Less is a
+ * click - typically the first half of a double-click to autofit - and committing it pushed an
+ * undo entry and marked the file dirty for a 1px wobble.
+ */
+const RESIZE_SLOP = 3;
+/** Second press on the same border within this long is a double-click (Windows' default). */
+const DOUBLE_PRESS_MS = 500;
 
 export class Grid {
   host: HTMLElement;
@@ -453,6 +461,7 @@ export class Grid {
     else this.setActive(r, c);
   }
   private lastResize: { kind: "col" | "row"; index: number; at: number } | null = null;
+  private autofitAt = 0;
   private cursorExt: { r: number; c: number } | null = null;
   private extendCursor() { return this.cursorExt && this.selection.ranges.length ? this.cursorExt : { ...this.selection.active }; }
 
@@ -497,8 +506,8 @@ export class Grid {
     const shift = e.shiftKey, ctrl = e.ctrlKey || e.metaKey;
     switch (hit.type) {
       case "corner": this.selectAll(); return;
-      case "colResize": this.lastResize = { kind: "col", index: hit.c, at: Date.now() }; this.drag = { kind: "resizeCol", start: { r: 0, c: hit.c }, index: hit.c, startPos: e.clientX, startSize: this.colWidthPx(hit.c) }; e.preventDefault(); return;
-      case "rowResize": this.lastResize = { kind: "row", index: hit.r, at: Date.now() }; this.drag = { kind: "resizeRow", start: { r: hit.r, c: 0 }, index: hit.r, startPos: e.clientY, startSize: this.rowHeightPxZ(hit.r) }; e.preventDefault(); return;
+      case "colResize": if (this.pressOnBorder("col", hit.c)) { e.preventDefault(); return; } this.drag = { kind: "resizeCol", start: { r: 0, c: hit.c }, index: hit.c, startPos: e.clientX, startSize: this.colWidthPx(hit.c) }; e.preventDefault(); return;
+      case "rowResize": if (this.pressOnBorder("row", hit.r)) { e.preventDefault(); return; } this.drag = { kind: "resizeRow", start: { r: hit.r, c: 0 }, index: hit.r, startPos: e.clientY, startSize: this.rowHeightPxZ(hit.r) }; e.preventDefault(); return;
       case "colHeader":
         if (ctrl && !shift) this.addCols(hit.c, hit.c);
         else if (shift) this.selectCols(this.selection.anchor.c, hit.c);
@@ -566,12 +575,14 @@ export class Grid {
     }
     const d = this.drag;
     if (d.kind === "resizeCol") {
+      if (!this.previewSize && Math.abs(e.clientX - d.startPos!) < RESIZE_SLOP) return;
       const w = Math.max(4, d.startSize! + (e.clientX - d.startPos!));
       this.previewSize = { kind: "col", index: d.index!, size: w };
       this.schedule();
       return;
     }
     if (d.kind === "resizeRow") {
+      if (!this.previewSize && Math.abs(e.clientY - d.startPos!) < RESIZE_SLOP) return;
       const h = Math.max(4, d.startSize! + (e.clientY - d.startPos!));
       this.previewSize = { kind: "row", index: d.index!, size: h };
       this.schedule();
@@ -664,7 +675,43 @@ export class Grid {
     void e;
   }
 
+  /**
+   * A press on a column or row border. The second press on the same border within the double-
+   * click time autofits it. That is counted here rather than left to the browser's dblclick: the
+   * resize band is wider than the few pixels a double-click may wander, so a slightly shaky
+   * double-click arrived as two single clicks and did nothing. Returns true when it autofitted.
+   */
+  private pressOnBorder(kind: "col" | "row", index: number): boolean {
+    const now = Date.now(), last = this.lastResize;
+    if (last && last.kind === kind && last.index === index && now - last.at < DOUBLE_PRESS_MS) {
+      this.lastResize = null;
+      this.autofitAt = now;
+      this.ev.onAutoFit(kind, index);
+      return true;
+    }
+    this.lastResize = { kind, index, at: now };
+    return false;
+  }
+
+  /**
+   * A double-click on the border between two cells of the header row fits that column, the same
+   * as on the letter band above it. The bold, frozen header is where the eye goes when a column
+   * is too narrow; the 22px letter band is easy to miss. Only in the header rows and only within
+   * the resize band of a vertical border - everywhere else a double-click still edits the cell.
+   */
+  private autofitHeaderBorder(e: MouseEvent, r: number, c: number): boolean {
+    if (r >= Math.max(this.frozenRows(), 1)) return false;
+    const cr = this.cellRect(r, c);
+    const px = e.clientX - this.canvas.getBoundingClientRect().left;
+    if (Math.abs(px - (cr.x + cr.w)) <= RESIZE_ZONE) { this.ev.onAutoFit("col", c); return true; }
+    if (c > 0 && Math.abs(px - cr.x) <= RESIZE_ZONE) { this.ev.onAutoFit("col", c - 1); return true; }
+    return false;
+  }
+
   private onDblClick(e: MouseEvent) {
+    // pressOnBorder already fitted this double-click on its second press; the browser's own
+    // dblclick for the same gesture must not fit it again.
+    if (Date.now() - this.autofitAt < 600) return;
     const hit = this.hitTest(e);
     if (hit.type === "colResize") { this.ev.onAutoFit("col", hit.c); return; }
     if (hit.type === "rowResize") { this.ev.onAutoFit("row", hit.r); return; }
@@ -675,7 +722,10 @@ export class Grid {
       this.lastResize = null;
       return;
     }
-    if (hit.type === "cell") { this.setActive(hit.r, hit.c); this.ev.onEdit(null); }
+    if (hit.type === "cell") {
+      if (this.autofitHeaderBorder(e, hit.r, hit.c)) return;
+      this.setActive(hit.r, hit.c); this.ev.onEdit(null);
+    }
   }
 
   hyperlinkAt(r: number, c: number): Hyperlink | null {
@@ -1018,13 +1068,9 @@ export class Grid {
     let clipX = x, clipW = w;
     let textW = ctx.measureText(lines[0]).width;
     if (!cs.wrap && lines.length === 1 && textW + 2 * pad + indent > w) {
-      if (isNum) {
-        // numbers never overflow: show ### like Excel
-        if (typeof cell.v === "number") {
-          text = "#"; while (ctx.measureText(text + "#").width <= w - 2 * pad && text.length < 20) text += "#";
-          lines[0] = text; textW = ctx.measureText(text).width;
-        }
-      } else if (halign === "left" || halign === "center") {
+      // Numbers spill into empty neighbours exactly like text - never ####. One that still does
+      // not fit is shrunk below, inside the clip.
+      if (halign === "left" || halign === "center") {
         // extend right over empty cells
         let cc = c + 1, ext = 0;
         const merge = mergeAt(s, r, c);
@@ -1050,6 +1096,13 @@ export class Grid {
     }
     ctx.save();
     ctx.beginPath(); ctx.rect(clipX, y, clipW, h); ctx.clip();
+    // A number that still does not fit after spilling is drawn smaller, never cut short: a
+    // clipped number shows a wrong value, which is worse than the #### it replaces. The font
+    // change lives inside save/restore, so the next cell starts from its own size.
+    if (isNum && typeof cell.v === "number" && !cs.wrap && lines.length === 1 && textW + 2 * pad + indent > clipW) {
+      const px = Math.max(1, fontPx * (clipW - 2 * pad - indent) / textW);
+      ctx.font = ctx.font.replace(/(\d+(?:\.\d+)?)px/, px.toFixed(2) + "px");
+    }
     const totalH = lines.length * lineH;
     let ty: number;
     if (cs.valign === "top") ty = y + pad / 2 + fontPx;

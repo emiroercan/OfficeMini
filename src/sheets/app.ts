@@ -107,9 +107,11 @@ function buildWorkspace() {
   const gridwrap = el("div", { id: "gridwrap" }, keyProxy, gridHost, celled);
   tabsEl = el("div", { id: "tabs" });
   const welcome = $("welcome");
+  // Sheet tabs sit at the top, right under the toolbar, like document tabs: toolbar, tabs,
+  // formula bar, grid.
+  ws.insertBefore(tabsEl, welcome);
   ws.insertBefore(fbar, welcome);
   ws.insertBefore(gridwrap, welcome);
-  ws.insertBefore(tabsEl, welcome);
   namebox.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); goToRef(namebox.value.trim()); focusGrid(); }
     else if (e.key === "Escape") { e.preventDefault(); updateNameBox(); focusGrid(); }
