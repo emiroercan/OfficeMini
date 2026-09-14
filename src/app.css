@@ -83,9 +83,17 @@ body {
 }
 #app { display: flex; flex-direction: column; height: 100vh; }
 
-/* Menu bar - also carries the sheet tabs, formula bar and name box (see #sheet-toprow). */
-#menubar { display: flex; align-items: center; height: 30px; background: var(--ui-bg); padding: 0 4px; flex: none; }
+/* Menu bar doubles as the custom titlebar: menus (left), filename (#doctitle, centred) and the
+   window buttons decorum injects at the right. Empty areas drag the window (data-tauri-drag-region). */
+#menubar { display: flex; align-items: center; height: 34px; background: var(--ui-bg); padding: 0 4px; flex: none; }
 .menu-title { padding: 3px 10px; border-radius: 6px; cursor: default; flex: none; }
+/* Filename in the titlebar (no OS titlebar). Centred, click-through so drag/menus still work. */
+#doctitle { position: fixed; top: 0; left: 0; right: 0; height: 34px; display: flex; align-items: center; justify-content: center; pointer-events: none; color: var(--ui-muted); font-size: 12.5px; z-index: 1; padding: 0 160px; white-space: nowrap; overflow: hidden; }
+#doctitle:empty { display: none; }
+/* decorum's injected window-control strip: let clicks pass through everywhere except the buttons,
+   so our menus and the drag region underneath keep working. */
+div[data-tauri-decorum-tb] { pointer-events: none !important; background: transparent !important; }
+.decorum-tb-btn { pointer-events: auto !important; color: var(--ui-fg); }
 .menu-title:hover, .menu-title.open { background: var(--ui-hover); }
 .menu-popup {
   position: fixed; z-index: 1000; min-width: 220px; background: var(--ui-popup); border: 1px solid var(--ui-divider);
@@ -322,8 +330,8 @@ html[data-theme="dark"] .page-hf img { filter: brightness(.92); }
 
 /* ---------- Sheets ---------- */
 #workspace.sheets { display: flex; flex-direction: column; overflow: hidden; background: var(--paper); }
-/* Rides on the menu row: sheet tabs (left), formula bar, name box (far right) - no row of its own. */
-#sheet-toprow { display: flex; align-items: stretch; align-self: stretch; flex: 1 1 0; min-width: 0; margin-left: 6px; border-left: 1px solid var(--ui-divider); }
+/* Compact row under the toolbar: sheet tabs (left), formula bar, name box (far right). */
+#sheet-toprow { display: flex; align-items: stretch; height: 30px; flex: none; background: var(--ui-bg); border-bottom: 1px solid var(--ui-divider); }
 #fbar { display: flex; align-items: stretch; flex: 1 1 0; min-width: 0; background: var(--ui-bg); border-left: 1px solid var(--ui-divider); }
 .namebox { flex: none; width: 104px; border: 0; border-left: 1px solid var(--ui-divider); background: var(--ui-bg); color: var(--ui-fg); font: 12.5px var(--ui-font); padding: 0 10px; outline: none; text-align: center; user-select: text; -webkit-user-select: text; }
 #fbar .fx { display: flex; align-items: center; padding: 0 10px; color: var(--ui-muted); font: italic 13px Georgia, serif; border-right: 1px solid var(--ui-divider); }

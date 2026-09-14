@@ -285,6 +285,9 @@ export async function appWindow() {
 
 export async function setWindowTitle(title: string) {
   document.title = title;
+  // Mirror the name into the custom titlebar (no OS titlebar with our own decorations).
+  const dt = document.getElementById("doctitle");
+  if (dt) dt.textContent = title.replace(/\s[–-]\s*OfficeMini\s*$/, "");
   const w = await appWindow();
   if (w) await w.setTitle(title);
 }

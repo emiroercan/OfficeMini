@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_decorum::WebviewWindowExt;
 
 static WINDOW_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -102,6 +103,7 @@ fn create_window(app: &AppHandle, path: Option<String>) -> tauri::Result<String>
         }
     }
     let win = builder.build()?;
+    let _ = win.create_overlay_titlebar();   // custom titlebar: our own window controls + snap
     harden_webview(&win);
     Ok(label)
 }
@@ -392,6 +394,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_decorum::init())
         .invoke_handler(tauri::generate_handler![
             read_file,
             write_file,
@@ -413,6 +416,7 @@ pub fn run() {
             // The first window is created from tauri.conf.json (hidden); the frontend
             // shows it once the document is rendered to avoid a white flash.
             if let Some(win) = app.get_webview_window("main") {
+                let _ = win.create_overlay_titlebar();   // custom titlebar (see create_window)
                 harden_webview(&win);
             }
             #[cfg(target_os = "macos")]

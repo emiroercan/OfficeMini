@@ -61,8 +61,6 @@ const styles = () => app.styles!;
 
 // DOM pieces created in buildWorkspace()
 let namebox: HTMLInputElement, finput: HTMLTextAreaElement, gridHost: HTMLElement, celled: HTMLTextAreaElement, tabsEl: HTMLElement;
-/** Tabs + formula bar + name box: they ride on the right of the menu row to save a whole row. */
-let sheetTopbar: HTMLElement;
 /**
  * Invisible textarea that holds keyboard focus while the grid is "focused". Copy / cut / paste
  * then arrive as native clipboard events in every webview (Chromium, WebKitGTK, WebKit) without
@@ -109,9 +107,10 @@ function buildWorkspace() {
   const gridwrap = el("div", { id: "gridwrap" }, keyProxy, gridHost, celled);
   tabsEl = el("div", { id: "tabs" });
   const welcome = $("welcome");
-  // The tabs, formula bar and name box are attached to the menu row (buildMenubar) rather than a
-  // row of their own, so the top chrome is just the menu row and the toolbar above the grid.
-  sheetTopbar = el("div", { id: "sheet-toprow" }, tabsEl, fbar, namebox);
+  // One compact row: sheet tabs (left), the formula bar and the name box at the far right. (The
+  // menus and filename live in the custom titlebar above the toolbar.)
+  const toprow = el("div", { id: "sheet-toprow" }, tabsEl, fbar, namebox);
+  ws.insertBefore(toprow, welcome);
   ws.insertBefore(gridwrap, welcome);
   namebox.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); goToRef(namebox.value.trim()); focusGrid(); }
@@ -2068,7 +2067,6 @@ function buildMenubar() {
     titles.push(t);
     bar.appendChild(t);
   });
-  if (sheetTopbar) bar.appendChild(sheetTopbar);   // tabs + formula bar + name box share this row
   window.addEventListener("keydown", (e) => {
     if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && !app.editor?.active && !dialogOpen()) {
       const i = menus.findIndex((m) => m.alt === e.key.toLowerCase());
