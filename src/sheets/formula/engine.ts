@@ -215,8 +215,32 @@ export class Engine {
   private computing = new Set<string>();
   unsupported = new Set<string>();
   private pass = 0;
+  private lookupIndex = new Map<string, Map<string, number>>();
+  private inRecalc = false;
 
   constructor(public wb: Workbook) {}
+
+  /** Normalised key for exact matching: case-insensitive for strings, type-exact otherwise. */
+  keyOf(v: Val): string { return typeof v + "\u0000" + (typeof v === "string" ? v.toLowerCase() : String(v)); }
+
+  /**
+   * value -> first-index map for a lookup vector, memoised for the whole recalc pass. N exact
+   * lookups over the same range then cost O(N) to build once plus O(1) each, instead of O(N)
+   * apiece - the XLOOKUP/VLOOKUP/MATCH O(N^2) freeze on large sheets. Returns null when the
+   * argument is not a plain cell range (so it has no stable key); the caller scans linearly then.
+   */
+  exactIndex(node: Node | undefined, arr: Arr, sheet: Sheet, byRow: boolean, colOffset = 0): Map<string, number> | null {
+    if (!node || node.t !== "ref") return null;
+    const rf = node.ref; const sh = this.sheetByName(rf.sheet, sheet); if (!sh) return null;
+    const key = sh.name + "|" + rf.r1 + "," + rf.c1 + "," + rf.r2 + "," + rf.c2 + "|" + (byRow ? "R" : "C") + colOffset;
+    let m = this.lookupIndex.get(key);
+    if (m) return m;
+    m = new Map<string, number>();
+    const n = byRow ? arr.rows : arr.cols;
+    for (let i = 0; i < n; i++) { const v = (byRow ? arr.get(i, colOffset) : arr.get(colOffset, i)) as Val; const k = this.keyOf(v); if (!m.has(k)) m.set(k, i); }
+    this.lookupIndex.set(key, m);
+    return m;
+  }
 
   private sheetByName(name: string | null, current: Sheet): Sheet | null {
     if (!name) return current;
@@ -243,6 +267,7 @@ export class Engine {
   }
 
   evaluateFormula(f: string, sheet: Sheet, r: number, c: number): Val {
+    if (!this.inRecalc) this.lookupIndex.clear();   // a standalone eval (editing/F9) starts fresh
     const ast = parseFormula(f);
     if (isErrObj(ast)) return ast;
     const v = this.ev(ast, sheet, r, c);
@@ -254,6 +279,8 @@ export class Engine {
     this.values.clear();
     this.computing.clear();
     this.unsupported.clear();
+    this.lookupIndex.clear();
+    this.inRecalc = true;
     this.pass++;
     let changed = 0;
     for (const sheet of this.wb.sheets) {
@@ -269,6 +296,7 @@ export class Engine {
         if (!sameVal(v, cell.v as Val)) { sheet.cells.set(k, { ...cell, v: v as Value }); changed++; sheet.dirty = true; }
       }
     }
+    this.inRecalc = false;
     return changed;
   }
 
@@ -531,11 +559,11 @@ const FUNCS: Record<string, Fn> = {
   DATEDIF: (c) => chk(numArg(c, 0), (a) => chk(numArg(c, 1), (b) => chk(strArg(c, 2), (u) => { const pa = dateParts(a, c), pb = dateParts(b, c); if (b < a) return NUM; const U = u.toUpperCase(); if (U === "D") return Math.floor(b) - Math.floor(a); let months = (pb.y - pa.y) * 12 + (pb.m - pa.m); if (pb.d < pa.d) months--; if (U === "M") return months; if (U === "Y") return Math.floor(months / 12); if (U === "YM") return months % 12; return VALUE; }))),
   NETWORKDAYS: (c) => chk(numArg(c, 0), (a) => chk(numArg(c, 1), (b) => { const hol = holidaySet(c, 2); let n = 0; const lo = Math.floor(Math.min(a, b)), hi = Math.floor(Math.max(a, b)); for (let s = lo; s <= hi; s++) { const wd = dateParts(s, c).wd; if (wd !== 0 && wd !== 6 && !hol.has(s)) n++; } return a <= b ? n : -n; })),
   WORKDAY: (c) => chk(numArg(c, 0), (a) => chk(numArg(c, 1), (days) => { const hol = holidaySet(c, 2); let s = Math.floor(a); const step = days < 0 ? -1 : 1; let left = Math.abs(Math.trunc(days)); while (left > 0) { s += step; const wd = dateParts(s, c).wd; if (wd !== 0 && wd !== 6 && !hol.has(s)) left--; } return s; })),
-  VLOOKUP: (c) => { const v = need(c, 0), tbl = c.eval(1)!, col = numArg(c, 2); if (isError(col)) return col; if (!isArr(tbl)) return NA; const approx = c.n > 3 ? toBool(need(c, 3)) : true; if (col < 1 || col > tbl.cols) return REF; const i = approx === true ? lookupApprox(v, tbl, 0, true) : lookupExact(v, { rows: tbl.rows, cols: 1, get: (r) => tbl.get(r, 0) }, 0); return i < 0 ? NA : tbl.get(i, col - 1); },
-  HLOOKUP: (c) => { const v = need(c, 0), tbl = c.eval(1)!, row = numArg(c, 2); if (isError(row)) return row; if (!isArr(tbl)) return NA; const approx = c.n > 3 ? toBool(need(c, 3)) : true; if (row < 1 || row > tbl.rows) return REF; const i = approx === true ? lookupApprox(v, tbl, 0, false) : lookupExact(v, { rows: 1, cols: tbl.cols, get: (_r, cc) => tbl.get(0, cc) }, 0); return i < 0 ? NA : tbl.get(row - 1, i); },
-  XLOOKUP: (c) => { const v = need(c, 0), la = c.eval(1)!, ra = c.eval(2)!; if (!isArr(la) || !isArr(ra)) return NA; const mode = c.n > 4 ? numArg(c, 4, 0) : 0; if (isError(mode)) return mode; const i = lookupExact(v, la, mode); if (i < 0) return c.n > 3 && c.eval(3) !== undefined && first(c.eval(3)!) !== null ? c.eval(3)! : NA; if (la.rows === 1 && la.cols > 1) { if (ra.rows > 1 && ra.cols === la.cols) return { rows: ra.rows, cols: 1, get: (r) => ra.get(r, i) }; return ra.get(0, Math.min(i, ra.cols - 1)); } if (ra.cols > 1) return { rows: 1, cols: ra.cols, get: (_r, cc) => ra.get(i, cc) }; return ra.get(Math.min(i, ra.rows - 1), 0); },
+  VLOOKUP: (c) => { const v = need(c, 0), tbl = c.eval(1)!, col = numArg(c, 2); if (isError(col)) return col; if (!isArr(tbl)) return NA; const approx = c.n > 3 ? toBool(need(c, 3)) : true; if (col < 1 || col > tbl.cols) return REF; const i = approx === true ? lookupApprox(v, tbl, 0, true) : (() => { const idx = c.engine.exactIndex(c.node(1), tbl, c.sheet, true, 0); if (!idx) return lookupExact(v, { rows: tbl.rows, cols: 1, get: (r) => tbl.get(r, 0) }, 0); const k = c.engine.keyOf(v); return idx.has(k) ? idx.get(k)! : -1; })(); return i < 0 ? NA : tbl.get(i, col - 1); },
+  HLOOKUP: (c) => { const v = need(c, 0), tbl = c.eval(1)!, row = numArg(c, 2); if (isError(row)) return row; if (!isArr(tbl)) return NA; const approx = c.n > 3 ? toBool(need(c, 3)) : true; if (row < 1 || row > tbl.rows) return REF; const i = approx === true ? lookupApprox(v, tbl, 0, false) : (() => { const idx = c.engine.exactIndex(c.node(1), tbl, c.sheet, false, 0); if (!idx) return lookupExact(v, { rows: 1, cols: tbl.cols, get: (_r, cc) => tbl.get(0, cc) }, 0); const k = c.engine.keyOf(v); return idx.has(k) ? idx.get(k)! : -1; })(); return i < 0 ? NA : tbl.get(row - 1, i); },
+  XLOOKUP: (c) => { const v = need(c, 0), la = c.eval(1)!, ra = c.eval(2)!; if (!isArr(la) || !isArr(ra)) return NA; const mode = c.n > 4 ? numArg(c, 4, 0) : 0; if (isError(mode)) return mode; const i = mode === 0 ? (() => { const idx = c.engine.exactIndex(c.node(1), la, c.sheet, la.rows !== 1, 0); if (!idx) return lookupExact(v, la, 0); const k = c.engine.keyOf(v); return idx.has(k) ? idx.get(k)! : -1; })() : lookupExact(v, la, mode); if (i < 0) return c.n > 3 && c.eval(3) !== undefined && first(c.eval(3)!) !== null ? c.eval(3)! : NA; if (la.rows === 1 && la.cols > 1) { if (ra.rows > 1 && ra.cols === la.cols) return { rows: ra.rows, cols: 1, get: (r) => ra.get(r, i) }; return ra.get(0, Math.min(i, ra.cols - 1)); } if (ra.cols > 1) return { rows: 1, cols: ra.cols, get: (_r, cc) => ra.get(i, cc) }; return ra.get(Math.min(i, ra.rows - 1), 0); },
   INDEX: (c) => { const arr = c.eval(0)!; const r = numArg(c, 1, 0); if (isError(r)) return r; const cc = numArg(c, 2, 0); if (isError(cc)) return cc; if (r < 0 || cc < 0) return VALUE; if (!isArr(arr)) return r <= 1 && cc <= 1 ? arr : REF; if (r === 0 && cc === 0) return arr; if (r === 0) { if (cc > arr.cols) return REF; return { rows: arr.rows, cols: 1, get: (i) => arr.get(i, cc - 1) }; } if (cc === 0) { if (arr.rows === 1) return r > arr.cols ? REF : arr.get(0, r - 1); if (arr.cols === 1) return r > arr.rows ? REF : arr.get(r - 1, 0); if (r > arr.rows) return REF; return { rows: 1, cols: arr.cols, get: (_i, j) => arr.get(r - 1, j) }; } if (r > arr.rows || cc > arr.cols) return REF; return arr.get(r - 1, cc - 1); },
-  MATCH: (c) => { const v = need(c, 0), arr = c.eval(1)!, type = numArg(c, 2, 1); if (isError(type)) return type; if (!isArr(arr)) return NA; const i = type === 0 ? lookupExact(v, arr, /[*?]/.test(String(v)) && typeof v === "string" ? 2 : 0) : type > 0 ? lookupApprox(v, arr, 0, arr.rows > 1) : lookupExact(v, arr, 1); return i < 0 ? NA : i + 1; },
+  MATCH: (c) => { const v = need(c, 0), arr = c.eval(1)!, type = numArg(c, 2, 1); if (isError(type)) return type; if (!isArr(arr)) return NA; const i = type === 0 ? ((/[*?]/.test(String(v)) && typeof v === "string") ? lookupExact(v, arr, 2) : (() => { const idx = c.engine.exactIndex(c.node(1), arr, c.sheet, arr.rows !== 1, 0); if (!idx) return lookupExact(v, arr, 0); const k = c.engine.keyOf(v); return idx.has(k) ? idx.get(k)! : -1; })()) : type > 0 ? lookupApprox(v, arr, 0, arr.rows > 1) : lookupExact(v, arr, 1); return i < 0 ? NA : i + 1; },
   CHOOSE: (c) => chk(numArg(c, 0), (i) => (i >= 1 && i < c.n ? c.eval(i)! : VALUE)),
   ROW: (c) => { const nd = c.node(0); if (!nd) return c.r + 1; if (nd.t !== "ref") return VALUE; const rf = nd.ref; return rf.r1 === rf.r2 ? rf.r1 + 1 : { rows: rf.r2 - rf.r1 + 1, cols: 1, get: (i) => rf.r1 + 1 + i }; },
   COLUMN: (c) => { const nd = c.node(0); if (!nd) return c.c + 1; if (nd.t !== "ref") return VALUE; const rf = nd.ref; return rf.c1 === rf.c2 ? rf.c1 + 1 : { rows: 1, cols: rf.c2 - rf.c1 + 1, get: (_i, j) => rf.c1 + 1 + j }; },
