@@ -83,10 +83,9 @@ body {
 }
 #app { display: flex; flex-direction: column; height: 100vh; }
 
-/* Menu bar */
-#menubar { display: flex; align-items: center; height: 26px; background: var(--ui-bg); padding: 0 4px; flex: none; position: relative; }
-.menu-doctitle { position: absolute; left: 50%; top: 0; bottom: 0; transform: translateX(-50%); display: flex; align-items: center; max-width: 46%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ui-muted); font-size: 12.5px; pointer-events: none; }
-.menu-title { padding: 3px 10px; border-radius: 6px; cursor: default; }
+/* Menu bar - also carries the sheet tabs, formula bar and name box (see #sheet-toprow). */
+#menubar { display: flex; align-items: center; height: 30px; background: var(--ui-bg); padding: 0 4px; flex: none; }
+.menu-title { padding: 3px 10px; border-radius: 6px; cursor: default; flex: none; }
 .menu-title:hover, .menu-title.open { background: var(--ui-hover); }
 .menu-popup {
   position: fixed; z-index: 1000; min-width: 220px; background: var(--ui-popup); border: 1px solid var(--ui-divider);
@@ -323,10 +322,10 @@ html[data-theme="dark"] .page-hf img { filter: brightness(.92); }
 
 /* ---------- Sheets ---------- */
 #workspace.sheets { display: flex; flex-direction: column; overflow: hidden; background: var(--paper); }
-/* Formula bar (left half) and sheet tabs (right half) share one row to save vertical space. */
-#sheet-toprow { display: flex; align-items: stretch; height: 30px; flex: none; background: var(--ui-bg); border-bottom: 1px solid var(--ui-divider); }
-#fbar { display: flex; align-items: stretch; flex: 1 1 50%; min-width: 0; background: var(--ui-bg); border-right: 1px solid var(--ui-divider); }
-#fbar .namebox { width: 90px; border: 0; border-right: 1px solid var(--ui-divider); background: var(--ui-bg); color: var(--ui-fg); font: 12.5px var(--ui-font); padding: 0 10px; outline: none; user-select: text; -webkit-user-select: text; }
+/* Rides on the menu row: sheet tabs (left), formula bar, name box (far right) - no row of its own. */
+#sheet-toprow { display: flex; align-items: stretch; align-self: stretch; flex: 1 1 0; min-width: 0; margin-left: 6px; border-left: 1px solid var(--ui-divider); }
+#fbar { display: flex; align-items: stretch; flex: 1 1 0; min-width: 0; background: var(--ui-bg); border-left: 1px solid var(--ui-divider); }
+.namebox { flex: none; width: 104px; border: 0; border-left: 1px solid var(--ui-divider); background: var(--ui-bg); color: var(--ui-fg); font: 12.5px var(--ui-font); padding: 0 10px; outline: none; text-align: center; user-select: text; -webkit-user-select: text; }
 #fbar .fx { display: flex; align-items: center; padding: 0 10px; color: var(--ui-muted); font: italic 13px Georgia, serif; border-right: 1px solid var(--ui-divider); }
 #fbar .finput { flex: 1; border: 0; background: var(--ui-input); color: var(--ui-fg); font: 13px Consolas, "Cascadia Mono", monospace; padding: 0 8px; outline: none; user-select: text; -webkit-user-select: text; resize: none; line-height: 27px; height: 27px; white-space: pre; overflow: hidden; }
 #fbar .finput:focus { box-shadow: inset 0 0 0 1px var(--ui-accent); }
@@ -336,8 +335,8 @@ html[data-theme="dark"] .page-hf img { filter: brightness(.92); }
 .sheet-canvas { position: sticky; left: 0; top: 0; display: block; cursor: cell; }
 #celled { position: absolute; display: none; z-index: 20; border: 2px solid var(--ui-accent); background: var(--paper); color: var(--paper-text); padding: 1px 3px; margin: 0; outline: none; resize: none; overflow: hidden; white-space: pre; box-shadow: 0 2px 8px rgba(0,0,0,.2); font: 11pt Calibri, Carlito, sans-serif; line-height: 1.2; user-select: text; -webkit-user-select: text; }
 #celled.wrap { white-space: pre-wrap; }
-/* Sheet tabs share the formula bar's row (right half); centred pills, horizontally scrollable. */
-#tabs { display: flex; align-items: center; flex: 1 1 50%; min-width: 0; background: var(--ui-bg); padding: 0 8px; gap: 2px; overflow-x: auto; overflow-y: hidden; }
+/* Sheet tabs sit on the left of the shared row; centred pills, horizontally scrollable. */
+#tabs { display: flex; align-items: center; flex: 1 1 0; min-width: 0; background: var(--ui-bg); padding: 0 8px; gap: 2px; overflow-x: auto; overflow-y: hidden; }
 #tabs::-webkit-scrollbar { height: 6px; }
 .sheet-tab { display: inline-flex; align-items: center; gap: 6px; padding: 3px 15px; border-radius: 7px; border: 1px solid transparent; cursor: default; white-space: nowrap; color: var(--ui-fg); font-size: 13.5px; font-weight: 500; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 .sheet-tab:hover { background: var(--ui-hover); }

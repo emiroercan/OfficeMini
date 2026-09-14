@@ -61,8 +61,8 @@ const styles = () => app.styles!;
 
 // DOM pieces created in buildWorkspace()
 let namebox: HTMLInputElement, finput: HTMLTextAreaElement, gridHost: HTMLElement, celled: HTMLTextAreaElement, tabsEl: HTMLElement;
-/** Filename shown centred in the menu row (the menus themselves sit at the far left). */
-let menuDocTitle: HTMLElement | null = null;
+/** Tabs + formula bar + name box: they ride on the right of the menu row to save a whole row. */
+let sheetTopbar: HTMLElement;
 /**
  * Invisible textarea that holds keyboard focus while the grid is "focused". Copy / cut / paste
  * then arrive as native clipboard events in every webview (Chromium, WebKitGTK, WebKit) without
@@ -79,7 +79,6 @@ function updateTitle() {
   const t = `${docName()}${app.dirty ? " •" : ""} - OfficeMini`;
   document.title = t;
   F.setWindowTitle(t);
-  if (menuDocTitle) menuDocTitle.textContent = `${docName()}${app.dirty ? " •" : ""}`;
 }
 function setDirty(d: boolean) {
   if (app.dirty === d) return;
@@ -100,7 +99,7 @@ function buildWorkspace() {
   namebox = el("input", { class: "namebox", type: "text", spellcheck: "false", autocomplete: "off", "aria-label": "Name box" });
   tooltip(namebox, "Name box: type a cell or range (e.g. B3 or A1:C10) and press Enter");
   finput = el("textarea", { class: "finput", rows: "1", spellcheck: "false", "aria-label": "Formula bar" });
-  const fbar = el("div", { id: "fbar" }, namebox, el("span", { class: "fx" }, "fx"), finput);
+  const fbar = el("div", { id: "fbar" }, el("span", { class: "fx" }, "fx"), finput);
   gridHost = el("div", { tabindex: "-1" });
   celled = el("textarea", { id: "celled", spellcheck: "false", "aria-label": "Cell editor" });
   keyProxy = el("textarea", { id: "keyproxy", "aria-label": "Spreadsheet", spellcheck: "false", autocomplete: "off", tabindex: "0", style: { position: "absolute", left: "0", top: "0", width: "1px", height: "1px", opacity: "0", padding: "0", border: "0", resize: "none", overflow: "hidden", zIndex: "-1" } });
@@ -110,10 +109,9 @@ function buildWorkspace() {
   const gridwrap = el("div", { id: "gridwrap" }, keyProxy, gridHost, celled);
   tabsEl = el("div", { id: "tabs" });
   const welcome = $("welcome");
-  // One compact row carries the formula bar (left half) and the sheet tabs (right half), so the
-  // top chrome is a menu row, a toolbar and this - the grid gets the rest.
-  const toprow = el("div", { id: "sheet-toprow" }, fbar, tabsEl);
-  ws.insertBefore(toprow, welcome);
+  // The tabs, formula bar and name box are attached to the menu row (buildMenubar) rather than a
+  // row of their own, so the top chrome is just the menu row and the toolbar above the grid.
+  sheetTopbar = el("div", { id: "sheet-toprow" }, tabsEl, fbar, namebox);
   ws.insertBefore(gridwrap, welcome);
   namebox.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); goToRef(namebox.value.trim()); focusGrid(); }
@@ -2070,9 +2068,7 @@ function buildMenubar() {
     titles.push(t);
     bar.appendChild(t);
   });
-  menuDocTitle = el("div", { class: "menu-doctitle" });
-  bar.appendChild(menuDocTitle);
-  updateTitle();
+  if (sheetTopbar) bar.appendChild(sheetTopbar);   // tabs + formula bar + name box share this row
   window.addEventListener("keydown", (e) => {
     if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && !app.editor?.active && !dialogOpen()) {
       const i = menus.findIndex((m) => m.alt === e.key.toLowerCase());
