@@ -149,10 +149,14 @@ export function applyFilters(sheet: Sheet, styles: StyleResolver, test?: Formula
     const active = Array.from(st.entries()).filter(([, f]) => isActive(f));
     if (active.length) {
       const r2 = filterBottom(sheet, af);
+      // A totally empty row (a freshly inserted one) stays visible so it can be typed into. This
+      // must look at the WHOLE row, not just the filtered columns: a single-column filter would
+      // otherwise treat every existing row whose filtered cell is blank as "empty" and leak it
+      // through - blanks showing under a value filter that excludes them.
+      const bc2 = Math.max(af.c2, sheet.maxCol);
       for (let r = af.r1 + 1; r <= r2; r++) {
-        // Rows that are completely empty inside the filtered columns (freshly inserted rows) stay visible.
         let blank = true;
-        for (let c = af.c1; c <= af.c2; c++) { const cell = sheet.cells.get(key(r, c)); if (cell && cell.v !== null && cell.v !== "") { blank = false; break; } }
+        for (let c = 0; c <= bc2; c++) { const cell = sheet.cells.get(key(r, c)); if (cell && cell.v !== null && cell.v !== "") { blank = false; break; } }
         if (blank) continue;
         for (const [c, f] of active) {
           const cell = sheet.cells.get(key(r, c));
