@@ -122,6 +122,24 @@ const filterStates = new WeakMap<Sheet, FilterState>();
 export function filterState(sheet: Sheet): FilterState { let s = filterStates.get(sheet); if (!s) { s = new Map(); filterStates.set(sheet, s); } return s; }
 export function clearFilterState(sheet: Sheet) { filterStates.delete(sheet); sheet.hiddenRowsByFilter = new Set(); }
 
+/**
+ * Bottom row a filter actually covers. A stored autoFilter range (from an .xlsx, or set before
+ * rows were appended) can end above the real data - Excel still filters the whole contiguous
+ * block, and so must we, or every row past the stored ref stays visible however it is filtered.
+ * Extends the range's bottom down through non-blank rows, stopping at the first fully-blank one.
+ */
+function filterBottom(sheet: Sheet, af: Range): number {
+  let r2 = Math.min(af.r2, MAXR - 1);
+  const maxR = Math.max(sheet.maxRow, af.r1);
+  while (r2 < maxR) {
+    let blank = true;
+    for (let c = af.c1; c <= af.c2; c++) { const cell = sheet.cells.get(key(r2 + 1, c)); if (cell && cell.v !== null && cell.v !== "") { blank = false; break; } }
+    if (blank) break;
+    r2++;
+  }
+  return r2;
+}
+
 /** Recompute the set of rows hidden by the sheet's filter criteria. */
 export function applyFilters(sheet: Sheet, styles: StyleResolver, test?: FormulaRowTest) {
   const hidden = new Set<number>();
@@ -130,7 +148,7 @@ export function applyFilters(sheet: Sheet, styles: StyleResolver, test?: Formula
   if (af && st) {
     const active = Array.from(st.entries()).filter(([, f]) => isActive(f));
     if (active.length) {
-      const r2 = Math.min(af.r2, Math.max(sheet.maxRow, af.r1));
+      const r2 = filterBottom(sheet, af);
       for (let r = af.r1 + 1; r <= r2; r++) {
         // Rows that are completely empty inside the filtered columns (freshly inserted rows) stay visible.
         let blank = true;
@@ -158,7 +176,7 @@ export function uniqueValues(sheet: Sheet, af: Range, col: number, styles: Style
   const st = filterStates.get(sheet);
   const others = st ? Array.from(st.entries()).filter(([c, f]) => c !== col && isActive(f)) : [];
   const counts = new Map<string, { count: number; sortKey: number | string }>();
-  const r2 = Math.min(af.r2, Math.max(sheet.maxRow, af.r1));
+  const r2 = filterBottom(sheet, af);
   for (let r = af.r1 + 1; r <= r2; r++) {
     let skip = false;
     for (const [c, f] of others) {
