@@ -27,6 +27,8 @@ export interface GridEvents {
   onLink(hl: Hyperlink): void;
   onFilterButton(c: number, r: number, x: number, y: number): void;
   onMoveRange(src: Range, dst: Range, copy: boolean): void;
+  /** Drag a column/row header to reorder: move block [from1..from2] to before index `before`. */
+  onMoveHeader(axis: "row" | "col", from1: number, from2: number, before: number): void;
 }
 
 export interface Selection { ranges: Range[]; active: { r: number; c: number }; anchor: { r: number; c: number }; }
@@ -71,7 +73,9 @@ export class Grid {
   private colors!: Colors;
   private fontCache = new Map<string, string>();
   private textCache = new WeakMap<Cell, { key: string; text: string; color: string | null; align: string | null }>();
-  private drag: null | { kind: "select" | "col" | "row" | "resizeCol" | "resizeRow" | "fill" | "move"; start: { r: number; c: number }; additive?: boolean; index?: number; startPos?: number; startSize?: number; fillTarget?: Range; moveTarget?: Range; moveCopy?: boolean } = null;
+  private drag: null | { kind: "select" | "col" | "row" | "resizeCol" | "resizeRow" | "fill" | "move" | "moveCol" | "moveRow"; start: { r: number; c: number }; additive?: boolean; index?: number; startPos?: number; startSize?: number; fillTarget?: Range; moveTarget?: Range; moveCopy?: boolean; moveFrom?: [number, number]; headerBefore?: number; moved?: boolean } = null;
+  /** While dragging a header to reorder: the axis and the boundary the block would drop before. */
+  private moveIndicator: { axis: "row" | "col"; before: number } | null = null;
   private autoScroll = 0;
   private resizeObserver: ResizeObserver;
   private dpr = 1;
@@ -115,7 +119,7 @@ export class Grid {
     const v = (n: string, d: string) => cs.getPropertyValue(n).trim() || d;
     const dark = document.documentElement.getAttribute("data-theme") === "dark";
     this.colors = {
-      paper: v("--paper", "#ffffff"), text: v("--paper-text", "#000000"), grid: dark ? "#3a3b40" : "#e1e1e1",
+      paper: v("--paper", "#ffffff"), text: v("--paper-text", "#000000"), grid: dark ? "#34353a" : "#ededf0",
       headerBg: v("--ui-bg", "#f6f6f7"), headerText: v("--ui-muted", "#6b6b73"), headerSel: dark ? "#33405f" : "#d3e3fd", accent: v("--ui-accent", "#2f6fed"),
       selFill: dark ? "rgba(109,156,255,.18)" : "rgba(47,111,237,.12)", frozenLine: dark ? "#6b6f7a" : "#9aa0a6",
     };
@@ -475,6 +479,15 @@ export class Grid {
   selectRows(r1: number, r2: number) { this.setRanges([{ r1: Math.min(r1, r2), c1: 0, r2: Math.max(r1, r2), c2: MAXC - 1 }], { r: Math.min(r1, r2), c: this.selection.active.c }); }
   selectCols(c1: number, c2: number) { this.setRanges([{ r1: 0, c1: Math.min(c1, c2), r2: MAXR - 1, c2: Math.max(c1, c2) }], { r: this.selection.active.r, c: Math.min(c1, c2) }); }
 
+  /** The whole-column / whole-row selection covering an index, for grabbing a header to move it. */
+  private selectedColSpan(c: number): [number, number] | null { for (const rg of this.selection.ranges) if (rg.r1 === 0 && rg.r2 >= MAXR - 1 && c >= rg.c1 && c <= rg.c2) return [rg.c1, rg.c2]; return null; }
+  private selectedRowSpan(r: number): [number, number] | null { for (const rg of this.selection.ranges) if (rg.c1 === 0 && rg.c2 >= MAXC - 1 && r >= rg.r1 && r <= rg.r2) return [rg.r1, rg.r2]; return null; }
+  private colAtX(px: number): number { const rel = px - HEADER_W * this.zoom; return this.colIndexAt(rel < this.frozenW() ? Math.max(0, rel) : rel + this.host.scrollLeft); }
+  private rowAtY(py: number): number { const rel = py - HEADER_H * this.zoom; return this.rowIndexAt(rel < this.frozenH() ? Math.max(0, rel) : rel + this.host.scrollTop); }
+  /** Column boundary a header drag would drop before (left half of a column drops before it). */
+  private insertColAt(px: number): number { const c = this.colAtX(px); const cr = this.cellRect(0, c); return Math.max(0, Math.min(this.ncols, px > cr.x + cr.w / 2 ? c + 1 : c)); }
+  private insertRowAt(py: number): number { const r = this.rowAtY(py); const cr = this.cellRect(r, 0); return Math.max(0, Math.min(this.nrows, py > cr.y + cr.h / 2 ? r + 1 : r)); }
+
   /** Ctrl+click / Ctrl+drag on the headers: another column or row alongside what is selected. */
   addCols(c1: number, c2: number, replaceLast = false) {
     const rg = { r1: 0, c1: Math.min(c1, c2), r2: MAXR - 1, c2: Math.max(c1, c2) };
@@ -508,16 +521,22 @@ export class Grid {
       case "corner": this.selectAll(); return;
       case "colResize": if (this.pressOnBorder("col", hit.c)) { e.preventDefault(); return; } this.drag = { kind: "resizeCol", start: { r: 0, c: hit.c }, index: hit.c, startPos: e.clientX, startSize: this.colWidthPx(hit.c) }; e.preventDefault(); return;
       case "rowResize": if (this.pressOnBorder("row", hit.r)) { e.preventDefault(); return; } this.drag = { kind: "resizeRow", start: { r: hit.r, c: 0 }, index: hit.r, startPos: e.clientY, startSize: this.rowHeightPxZ(hit.r) }; e.preventDefault(); return;
-      case "colHeader":
+      case "colHeader": {
+        const span = !ctrl && !shift ? this.selectedColSpan(hit.c) : null;
+        if (span) { this.drag = { kind: "moveCol", start: { r: 0, c: hit.c }, moveFrom: span }; this.canvas.style.cursor = "grabbing"; e.preventDefault(); return; }
         if (ctrl && !shift) this.addCols(hit.c, hit.c);
         else if (shift) this.selectCols(this.selection.anchor.c, hit.c);
         else { this.selectCols(hit.c, hit.c); this.selection.anchor = { r: 0, c: hit.c }; }
         this.drag = { kind: "col", start: { r: 0, c: hit.c }, additive: ctrl && !shift }; e.preventDefault(); return;
-      case "rowHeader":
+      }
+      case "rowHeader": {
+        const span = !ctrl && !shift ? this.selectedRowSpan(hit.r) : null;
+        if (span) { this.drag = { kind: "moveRow", start: { r: hit.r, c: 0 }, moveFrom: span }; this.canvas.style.cursor = "grabbing"; e.preventDefault(); return; }
         if (ctrl && !shift) this.addRows(hit.r, hit.r);
         else if (shift) this.selectRows(this.selection.anchor.r, hit.r);
         else { this.selectRows(hit.r, hit.r); this.selection.anchor = { r: hit.r, c: 0 }; }
         this.drag = { kind: "row", start: { r: hit.r, c: 0 }, additive: ctrl && !shift }; e.preventDefault(); return;
+      }
       case "fillHandle": this.drag = { kind: "fill", start: { ...this.selection.active }, fillTarget: { ...this.selection.ranges[0] } }; e.preventDefault(); return;
       case "filterBtn": { const cr = this.cellRect(hit.r, hit.c); const br = this.canvas.getBoundingClientRect(); this.ev.onFilterButton(hit.c, hit.r, br.left + cr.x, br.top + cr.y + cr.h); return; }
       case "cell": {
@@ -565,8 +584,8 @@ export class Grid {
       if (hit.type === "colResize") cursor = "col-resize";
       else if (hit.type === "rowResize") cursor = "row-resize";
       else if (hit.type === "fillHandle") cursor = "crosshair";
-      else if (hit.type === "colHeader") cursor = "s-resize";
-      else if (hit.type === "rowHeader") cursor = "e-resize";
+      else if (hit.type === "colHeader") cursor = this.selectedColSpan(hit.c) ? "grab" : "s-resize";
+      else if (hit.type === "rowHeader") cursor = this.selectedRowSpan(hit.r) ? "grab" : "e-resize";
       else if (hit.type === "cell" && (e.ctrlKey || e.metaKey) && this.hyperlinkAt(hit.r, hit.c)) cursor = "pointer";
       else if (hit.type === "cell" && this.isSelected(hit.r, hit.c) && this.onSelectionBorder(e)) cursor = "move";
       else if (hit.type === "filterBtn") cursor = "pointer";
@@ -586,6 +605,20 @@ export class Grid {
       const h = Math.max(4, d.startSize! + (e.clientY - d.startPos!));
       this.previewSize = { kind: "row", index: d.index!, size: h };
       this.schedule();
+      return;
+    }
+    if (d.kind === "moveCol") {
+      const before = this.insertColAt(Math.max(HEADER_W * this.zoom + 1, Math.min(px, this.host.clientWidth - 1)));
+      d.moved = true;
+      if (!this.moveIndicator || this.moveIndicator.before !== before) { this.moveIndicator = { axis: "col", before }; this.schedule(); }
+      this.autoScrollWith(px, HEADER_H * this.zoom + 40);
+      return;
+    }
+    if (d.kind === "moveRow") {
+      const before = this.insertRowAt(Math.max(HEADER_H * this.zoom + 1, Math.min(py, this.host.clientHeight - 1)));
+      d.moved = true;
+      if (!this.moveIndicator || this.moveIndicator.before !== before) { this.moveIndicator = { axis: "row", before }; this.schedule(); }
+      this.autoScrollWith(HEADER_W * this.zoom + 40, py);
       return;
     }
     const hit = this.hitAt(Math.max(HEADER_W * this.zoom + 1, Math.min(px, this.host.clientWidth - 1)), Math.max(HEADER_H * this.zoom + 1, Math.min(py, this.host.clientHeight - 1)));
@@ -670,7 +703,19 @@ export class Grid {
       const t = d.moveTarget;
       this.canvas.style.cursor = "cell";
       if (t.r1 !== src.r1 || t.c1 !== src.c1) this.ev.onMoveRange(src, t, !!d.moveCopy);
+    } else if (d.kind === "moveCol" || d.kind === "moveRow") {
+      const axis = d.kind === "moveCol" ? "col" : "row";
+      this.canvas.style.cursor = "cell";
+      if (d.moved && this.moveIndicator) {
+        const before = this.moveIndicator.before;
+        const [f1, f2] = d.moveFrom!;
+        if (before < f1 || before > f2 + 1) this.ev.onMoveHeader(axis, f1, f2, before);
+      } else {
+        // pressed a selected header but didn't drag: collapse the selection to that one line
+        if (axis === "col") this.selectCols(d.start.c, d.start.c); else this.selectRows(d.start.r, d.start.r);
+      }
     }
+    this.moveIndicator = null;
     this.schedule();
     void e;
   }
@@ -715,6 +760,10 @@ export class Grid {
     const hit = this.hitTest(e);
     if (hit.type === "colResize") { this.ev.onAutoFit("col", hit.c); return; }
     if (hit.type === "rowResize") { this.ev.onAutoFit("row", hit.r); return; }
+    // Double-clicking anywhere on a column/row header fits it, not only the thin border - the
+    // border is easy to miss, and a header double-click has no other meaning.
+    if (hit.type === "colHeader") { this.ev.onAutoFit("col", hit.c); return; }
+    if (hit.type === "rowHeader") { this.ev.onAutoFit("row", hit.r); return; }
     // The pointer can drift a pixel or two off the edge between the two clicks; the press
     // that started this double-click knew which edge it was on, so trust that instead.
     if (this.lastResize && Date.now() - this.lastResize.at < 800) {
@@ -811,6 +860,12 @@ export class Grid {
       if (this.previewSize.kind === "col") { const x = this.cellRect(0, this.previewSize.index).x + this.previewSize.size; ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, H); ctx.stroke(); }
       else { const y = this.cellRect(this.previewSize.index, 0).y + this.previewSize.size; ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); ctx.stroke(); }
       ctx.setLineDash([]);
+    }
+    if (this.moveIndicator) {
+      const mi = this.moveIndicator;
+      ctx.fillStyle = this.colors.accent;
+      if (mi.axis === "col") { const x = mi.before >= this.ncols ? this.cellRect(0, this.ncols - 1).x + this.colWidthPx(this.ncols - 1) : this.cellRect(0, mi.before).x; ctx.fillRect(x - 1, 0, 3, H); }
+      else { const y = mi.before >= this.nrows ? this.cellRect(this.nrows - 1, 0).y + this.rowHeightPxZ(this.nrows - 1) : this.cellRect(mi.before, 0).y; ctx.fillRect(0, y - 1, W, 3); }
     }
   }
 
@@ -1189,15 +1244,13 @@ export class Grid {
     }
   }
 
-  /** Pixel width needed to fit column c (for auto-fit). */
-  measureColumn(c: number, maxRows = 5000): number {
+  /** Pixel width needed to fit column c (for auto-fit): every non-empty cell to the end of the sheet. */
+  measureColumn(c: number): number {
     const s = this.sheet(); const ctx = this.ctx;
     let best = 0;
-    let n = 0;
-    for (let r = 0; r <= s.maxRow && n < maxRows; r++) {
+    for (let r = 0; r <= s.maxRow; r++) {
       const cell = s.cells.get(key(r, c));
       if (!cell || cell.v === null || cell.v === "") continue;
-      n++;
       const cs = this.styles.get(cell.s);
       const t = this.displayText(cell, cs, cell.s).text;
       ctx.font = this.font(cs);

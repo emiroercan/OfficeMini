@@ -5,7 +5,7 @@ import {
   Workbook, Sheet, Cell, Range, Font, Fill, Border, BorderSide, Xf, Styles, ColInfo, RowInfo, Value,
   key, rowOf, colOf, updateExtent, recomputeExtent, MAXR, MAXC, inRange, cellRef, parseRef, DEFAULT_FONT, Hyperlink,
 } from "./model";
-import { adjustFormulaForInsertDelete, shiftFormula, renameSheetInFormula } from "./formula/tokens";
+import { adjustFormulaForInsertDelete, shiftFormula, renameSheetInFormula, remapRefs } from "./formula/tokens";
 import { parseInput, isDateFormat, locale, serialToDate, dateToSerial } from "./numfmt";
 import { formatCodeFor } from "./numfmt";
 
@@ -349,6 +349,75 @@ export function insertDelete(wb: Workbook, sheetIdx: number, axis: "row" | "col"
       void k;
     }
     if (touched) other.dirty = true;
+  }
+}
+
+/**
+ * Reorder columns or rows: move the block [from1..from2] so it lands immediately before the
+ * index `before` (in the coordinates before the move), sliding the lines it passes over across -
+ * Google Sheets' drag-a-header-to-reorder, which inserts rather than swaps. It is a rotation of a
+ * contiguous run of indices, so cells, sizes, merges, filters, links and formula references are
+ * remapped through the same permutation: a reference to a moved line follows it.
+ */
+export function moveColsRows(wb: Workbook, sheetIdx: number, axis: "row" | "col", from1: number, from2: number, before: number) {
+  const sheet = wb.sheets[sheetIdx];
+  const a = Math.min(from1, from2), b = Math.max(from1, from2);
+  if (before >= a && before <= b + 1) return; // dropped back onto itself
+  const n = b - a + 1;
+  // old index -> new index (a rotation of one contiguous run, so it is a bijection)
+  const map = (v: number): number => {
+    if (v >= a && v <= b) return before < a ? before + (v - a) : (before - n) + (v - a);
+    if (before < a) return v >= before && v < a ? v + n : v;
+    return v > b && v < before ? v - n : v; // before > b + 1
+  };
+  // cells (and this sheet's own formula references)
+  const cells = new Map<number, Cell>();
+  for (const [k, cell] of sheet.cells) {
+    const r = rowOf(k), c = colOf(k);
+    const nr = axis === "row" ? map(r) : r, nc = axis === "col" ? map(c) : c;
+    let ncell = cell;
+    if (cell.f) { const f2 = remapRefs(cell.f, sheet.name, sheet.name, axis, map); if (f2 !== cell.f) ncell = { ...ncell, f: f2 }; }
+    if (ncell.arr) { const ar = parseRef(ncell.arr); if (ar) { const c1 = axis === "col" ? map(ar.c1) : ar.c1, c2 = axis === "col" ? map(ar.c2) : ar.c2, r1 = axis === "row" ? map(ar.r1) : ar.r1, r2 = axis === "row" ? map(ar.r2) : ar.r2; ncell = { ...ncell, arr: cellRef(Math.min(r1, r2), Math.min(c1, c2)) + ":" + cellRef(Math.max(r1, r2), Math.max(c1, c2)) }; } }
+    cells.set(key(nr, nc), ncell);
+  }
+  sheet.cells = cells;
+  sheet.formulaKeys = undefined;
+  // sizes / styles
+  if (axis === "row") {
+    const rows = new Map<number, RowInfo>();
+    for (const [r, info] of sheet.rows) rows.set(map(r), info);
+    sheet.rows = rows;
+    sheet.hiddenRowsByFilter = new Set();
+  } else {
+    const per = new Map<number, ColInfo>();
+    for (const ci of sheet.cols) for (let c = ci.min; c <= ci.max; c++) { const nc = map(c); per.set(nc, { ...ci, min: nc, max: nc }); }
+    const merged: ColInfo[] = [];
+    for (const ci of [...per.values()].sort((x, y) => x.min - y.min)) {
+      const last = merged[merged.length - 1];
+      if (last && last.max === ci.min - 1 && last.width === ci.width && last.hidden === ci.hidden && last.style === ci.style && last.customWidth === ci.customWidth && last.bestFit === ci.bestFit && last.level === ci.level) last.max = ci.max;
+      else merged.push({ ...ci });
+    }
+    sheet.cols = merged;
+  }
+  // merges: keep those whose width survives the permutation, drop any the move would split
+  sheet.merges = sheet.merges.map((m): Range | null => {
+    if (axis === "col") { const c1 = map(m.c1), c2 = map(m.c2); if (Math.abs(c2 - c1) !== m.c2 - m.c1) return null; return { ...m, c1: Math.min(c1, c2), c2: Math.max(c1, c2) }; }
+    const r1 = map(m.r1), r2 = map(m.r2); if (Math.abs(r2 - r1) !== m.r2 - m.r1) return null; return { ...m, r1: Math.min(r1, r2), r2: Math.max(r1, r2) };
+  }).filter((m): m is Range => !!m);
+  if (sheet.autoFilter) { const af = sheet.autoFilter; if (axis === "col") { const c1 = map(af.c1), c2 = map(af.c2); sheet.autoFilter = { ...af, c1: Math.min(c1, c2), c2: Math.max(c1, c2) }; } else { const r1 = map(af.r1), r2 = map(af.r2); sheet.autoFilter = { ...af, r1: Math.min(r1, r2), r2: Math.max(r1, r2) }; } }
+  sheet.hyperlinks = sheet.hyperlinks.map((h) => { const p = parseRef(h.ref); if (!p) return h; const c1 = axis === "col" ? map(p.c1) : p.c1, c2 = axis === "col" ? map(p.c2) : p.c2, r1 = axis === "row" ? map(p.r1) : p.r1, r2 = axis === "row" ? map(p.r2) : p.r2; const R1 = Math.min(r1, r2), C1 = Math.min(c1, c2), R2 = Math.max(r1, r2), C2 = Math.max(c1, c2); return { ...h, ref: cellRef(R1, C1) + (R1 !== R2 || C1 !== C2 ? ":" + cellRef(R2, C2) : "") }; });
+  recomputeExtent(sheet);
+  sheet.dirty = true;
+  // formulas on other sheets that point at this one (new cell objects so undo restores cleanly)
+  for (const other of wb.sheets) {
+    if (other === sheet) continue;
+    let touched = false;
+    const nm = new Map<number, Cell>();
+    for (const [k, cell] of other.cells) {
+      if (cell.f) { const f2 = remapRefs(cell.f, other.name, sheet.name, axis, map); if (f2 !== cell.f) { nm.set(k, { ...cell, f: f2 }); touched = true; continue; } }
+      nm.set(k, cell);
+    }
+    if (touched) { other.cells = nm; other.formulaKeys = undefined; other.dirty = true; }
   }
 }
 

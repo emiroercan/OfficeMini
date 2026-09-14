@@ -11,7 +11,7 @@ import { writeXlsx } from "./xlsx-write";
 import { csvToWorkbook, blankWorkbook, sheetToCsv, encodeCsv } from "./csv";
 import { StyleResolver } from "./render-style";
 import { Engine } from "./formula/engine";
-import { History, Entry, CellChange, cellsEntry, styleEntry, StylePatch, ValueConverter, inputCell, structuralEntry, insertDelete, renameSheet, fillChanges, sortChanges, clearChanges, boundRange, xfWith, SelSnapshot, movedCell } from "./edit";
+import { History, Entry, CellChange, cellsEntry, styleEntry, StylePatch, ValueConverter, inputCell, structuralEntry, insertDelete, moveColsRows, renameSheet, fillChanges, sortChanges, clearChanges, boundRange, xfWith, SelSnapshot, movedCell } from "./edit";
 import { copyRange, pasteInternal, pasteExternal, parseExternal, isOurHtml, internalClip, clearInternalClip, cancelCut, PasteMode } from "./clipboard";
 import { setLocale, locale, detectLocale, LOCALES, presets, formatValue, editText, parseInput, todaySerial, nowSerial, isDateFormat } from "./numfmt";
 import { CellEditor } from "./celledit";
@@ -61,6 +61,8 @@ const styles = () => app.styles!;
 
 // DOM pieces created in buildWorkspace()
 let namebox: HTMLInputElement, finput: HTMLTextAreaElement, gridHost: HTMLElement, celled: HTMLTextAreaElement, tabsEl: HTMLElement;
+/** Filename shown centred in the menu row (the menus themselves sit at the far left). */
+let menuDocTitle: HTMLElement | null = null;
 /**
  * Invisible textarea that holds keyboard focus while the grid is "focused". Copy / cut / paste
  * then arrive as native clipboard events in every webview (Chromium, WebKitGTK, WebKit) without
@@ -77,6 +79,7 @@ function updateTitle() {
   const t = `${docName()}${app.dirty ? " •" : ""} - OfficeMini`;
   document.title = t;
   F.setWindowTitle(t);
+  if (menuDocTitle) menuDocTitle.textContent = `${docName()}${app.dirty ? " •" : ""}`;
 }
 function setDirty(d: boolean) {
   if (app.dirty === d) return;
@@ -107,10 +110,10 @@ function buildWorkspace() {
   const gridwrap = el("div", { id: "gridwrap" }, keyProxy, gridHost, celled);
   tabsEl = el("div", { id: "tabs" });
   const welcome = $("welcome");
-  // Sheet tabs sit at the top, right under the toolbar, like document tabs: toolbar, tabs,
-  // formula bar, grid.
-  ws.insertBefore(tabsEl, welcome);
-  ws.insertBefore(fbar, welcome);
+  // One compact row carries the formula bar (left half) and the sheet tabs (right half), so the
+  // top chrome is a menu row, a toolbar and this - the grid gets the rest.
+  const toprow = el("div", { id: "sheet-toprow" }, fbar, tabsEl);
+  ws.insertBefore(toprow, welcome);
   ws.insertBefore(gridwrap, welcome);
   namebox.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); goToRef(namebox.value.trim()); focusGrid(); }
@@ -552,7 +555,17 @@ const gridEvents: GridEvents = {
   onLink(hl) { openLink(hl); },
   onFilterButton(c, r, x, y) { filterPopup(c, r, x, y); },
   onMoveRange(src, dst, copy) { moveRange(src, dst, copy); },
+  onMoveHeader(axis, from1, from2, before) { moveHeader(axis, from1, from2, before); },
 };
+
+/** Drag a column/row header to reorder it (insert, sliding the others over). */
+function moveHeader(axis: "row" | "col", from1: number, from2: number, before: number) {
+  clearFilterState(sheet());   // the filter's columns/rows are about to be renumbered
+  structural(axis === "col" ? "Move column" : "Move row", () => moveColsRows(wb(), grid().sheetIdx(), axis, from1, from2, before), true);
+  const a = Math.min(from1, from2), b = Math.max(from1, from2), n = b - a + 1;
+  const start = before <= a ? before : before - n;
+  if (axis === "col") grid().selectCols(start, start + n - 1); else grid().selectRows(start, start + n - 1);
+}
 
 function installGridExtras() {
   const g = grid();
@@ -1356,6 +1369,7 @@ function switchSheet(i: number) {
   if (wasEditing && !app.editor!.isFormula()) app.editor!.finish(null, true);
   w.sheets.forEach((s, j) => { s.view.tabSelected = j === i; });
   w.active = i;
+  grid().clipRange = null;   // the marching copy outline belongs to the sheet it was made on
   grid().setSheet(i);
   renderTabs();
   updateFbar();
@@ -1751,7 +1765,8 @@ function buildFindbar() {
     show(replace: boolean) {
       lockScope();                 // before anything moves the selection
       bar.hidden = false; this.visible = true;
-      replaceRow.style.display = replace ? "inline-flex" : "none";
+      replaceRow.style.display = "inline-flex";   // replace options are always available
+      void replace;
       // seed with the active cell's text when the box is empty
       if (!input.value) { const cell = activeCell(); if (cell && typeof cell.v === "string" && cell.v.length < 60) input.value = cell.v; }
       input.focus(); input.select();
@@ -2043,6 +2058,9 @@ function buildMenubar() {
     titles.push(t);
     bar.appendChild(t);
   });
+  menuDocTitle = el("div", { class: "menu-doctitle" });
+  bar.appendChild(menuDocTitle);
+  updateTitle();
   window.addEventListener("keydown", (e) => {
     if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && !app.editor?.active && !dialogOpen()) {
       const i = menus.findIndex((m) => m.alt === e.key.toLowerCase());

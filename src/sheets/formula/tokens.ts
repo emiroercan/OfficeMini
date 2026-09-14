@@ -155,6 +155,28 @@ export function adjustFormulaForInsertDelete(formula: string, currentSheet: stri
   }).join("");
 }
 
+/**
+ * Remap references on `targetSheet` through a column/row index permutation - what reordering
+ * columns or rows (drag a header) does. A single cell or a range that stays inside one moved
+ * run is exact; a range that only straddles the moved run keeps its bounding box.
+ */
+export function remapRefs(formula: string, currentSheet: string, targetSheet: string, axis: "row" | "col", map: (v: number) => number): string {
+  return tokenize(formula).map((t) => {
+    if (t.type !== "ref") return t.text;
+    const sheetOf = t.ref.sheet || currentSheet;
+    if (sheetOf.toLowerCase() !== targetSheet.toLowerCase()) return t.text;
+    const r = { ...t.ref };
+    if (axis === "col") {
+      if (r.rowOnly) return t.text;
+      const a = map(r.c1), b = map(r.c2); r.c1 = Math.min(a, b); r.c2 = Math.max(a, b);
+    } else {
+      if (r.colOnly) return t.text;
+      const a = map(r.r1), b = map(r.r2); r.r1 = Math.min(a, b); r.r2 = Math.max(a, b);
+    }
+    return refText(r);
+  }).join("");
+}
+
 /** Rename a sheet inside formulas. */
 export function renameSheetInFormula(formula: string, oldName: string, newName: string): string {
   return tokenize(formula).map((t) => {

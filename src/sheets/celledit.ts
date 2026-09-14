@@ -216,7 +216,10 @@ export class CellEditor {
     if (e.key === "F4" && this.isFormula()) { e.preventDefault(); this.toggleAnchor(); return; }
     if (e.key === "F2") { e.preventDefault(); this.arrowsNavigate = false; return; }
     if (e.key.startsWith("Arrow") || e.key === "Home" || e.key === "End" || e.key === "PageUp" || e.key === "PageDown") {
-      if (this.isFormula() && this.canPoint()) { e.preventDefault(); this.pointWithKeys(e); return; }
+      if (this.isFormula() && this.canPointArrows()) { e.preventDefault(); this.pointWithKeys(e); return; }
+      // Inside a formula (past its start) arrows move the caret through the text - they neither
+      // point at cells nor commit, so the formula can be edited like any other text.
+      if (this.isFormula()) return;
       if (this.arrowsNavigate && !isF && !ta.value.includes("\n") && (e.key === "ArrowUp" || e.key === "ArrowDown" || ((e.key === "ArrowLeft" || e.key === "ArrowRight") && ta.selectionStart === ta.selectionEnd && (e.key === "ArrowLeft" ? ta.selectionStart === 0 : ta.selectionStart === ta.value.length)))) {
         e.preventDefault();
         const dr = e.key === "ArrowUp" ? -1 : e.key === "ArrowDown" ? 1 : 0, dc = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
@@ -240,6 +243,18 @@ export class CellEditor {
 
   // ---- reference pointing ------------------------------------------------------
 
+
+  /**
+   * Whether an arrow key should point at cells rather than move the caret. Only right at the start
+   * of a formula (nothing typed after "=") or while a pointing gesture is already running - so
+   * arrows select a cell when you begin a formula and, from then on, just edit the text. Mouse
+   * pointing (canPoint) is unaffected and still works anywhere.
+   */
+  private canPointArrows(): boolean {
+    if (this.pointing) return true;
+    const ta = this.current();
+    return /^=\s*$/.test(ta.value.slice(0, ta.selectionStart));
+  }
 
   /** Can a reference be inserted at the caret (after an operator, "(", "," or at a ref we are already pointing at)? */
   private canPoint(): boolean {

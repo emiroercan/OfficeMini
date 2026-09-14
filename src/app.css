@@ -1,7 +1,7 @@
 /* ---------- Theme ---------- */
 :root {
   --ui-font: "Segoe UI", "Noto Sans", "DejaVu Sans", system-ui, sans-serif;
-  --ui-bg: #f6f6f7;
+  --ui-bg: #fbfbfc;
   --ui-border: #dadce0;
   --ui-divider: rgba(0,0,0,.07);
   --ui-fg: #1f1f23;
@@ -84,7 +84,8 @@ body {
 #app { display: flex; flex-direction: column; height: 100vh; }
 
 /* Menu bar */
-#menubar { display: flex; align-items: center; height: 26px; background: var(--ui-bg); padding: 0 4px; flex: none; }
+#menubar { display: flex; align-items: center; height: 26px; background: var(--ui-bg); padding: 0 4px; flex: none; position: relative; }
+.menu-doctitle { position: absolute; left: 50%; top: 0; bottom: 0; transform: translateX(-50%); display: flex; align-items: center; max-width: 46%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ui-muted); font-size: 12.5px; pointer-events: none; }
 .menu-title { padding: 3px 10px; border-radius: 6px; cursor: default; }
 .menu-title:hover, .menu-title.open { background: var(--ui-hover); }
 .menu-popup {
@@ -322,7 +323,9 @@ html[data-theme="dark"] .page-hf img { filter: brightness(.92); }
 
 /* ---------- Sheets ---------- */
 #workspace.sheets { display: flex; flex-direction: column; overflow: hidden; background: var(--paper); }
-#fbar { display: flex; align-items: stretch; height: 30px; border-bottom: 1px solid var(--ui-divider); background: var(--ui-bg); flex: none; }
+/* Formula bar (left half) and sheet tabs (right half) share one row to save vertical space. */
+#sheet-toprow { display: flex; align-items: stretch; height: 30px; flex: none; background: var(--ui-bg); border-bottom: 1px solid var(--ui-divider); }
+#fbar { display: flex; align-items: stretch; flex: 1 1 50%; min-width: 0; background: var(--ui-bg); border-right: 1px solid var(--ui-divider); }
 #fbar .namebox { width: 90px; border: 0; border-right: 1px solid var(--ui-divider); background: var(--ui-bg); color: var(--ui-fg); font: 12.5px var(--ui-font); padding: 0 10px; outline: none; user-select: text; -webkit-user-select: text; }
 #fbar .fx { display: flex; align-items: center; padding: 0 10px; color: var(--ui-muted); font: italic 13px Georgia, serif; border-right: 1px solid var(--ui-divider); }
 #fbar .finput { flex: 1; border: 0; background: var(--ui-input); color: var(--ui-fg); font: 13px Consolas, "Cascadia Mono", monospace; padding: 0 8px; outline: none; user-select: text; -webkit-user-select: text; resize: none; line-height: 27px; height: 27px; white-space: pre; overflow: hidden; }
@@ -333,14 +336,12 @@ html[data-theme="dark"] .page-hf img { filter: brightness(.92); }
 .sheet-canvas { position: sticky; left: 0; top: 0; display: block; cursor: cell; }
 #celled { position: absolute; display: none; z-index: 20; border: 2px solid var(--ui-accent); background: var(--paper); color: var(--paper-text); padding: 1px 3px; margin: 0; outline: none; resize: none; overflow: hidden; white-space: pre; box-shadow: 0 2px 8px rgba(0,0,0,.2); font: 11pt Calibri, Carlito, sans-serif; line-height: 1.2; user-select: text; -webkit-user-select: text; }
 #celled.wrap { white-space: pre-wrap; }
-/* Sheet tabs sit above the formula bar. The separator is an inset shadow rather than a border so
-   the active tab, painted over it, merges into the formula bar below (overflow-y: hidden would
-   clip a tab overlapping a real border). */
-#tabs { display: flex; align-items: flex-end; height: 30px; box-shadow: inset 0 -1px 0 var(--ui-divider); background: var(--ui-bg); flex: none; padding: 0 8px; gap: 2px; overflow-x: auto; overflow-y: hidden; }
+/* Sheet tabs share the formula bar's row (right half); centred pills, horizontally scrollable. */
+#tabs { display: flex; align-items: center; flex: 1 1 50%; min-width: 0; background: var(--ui-bg); padding: 0 8px; gap: 2px; overflow-x: auto; overflow-y: hidden; }
 #tabs::-webkit-scrollbar { height: 6px; }
-.sheet-tab { display: inline-flex; align-items: center; gap: 6px; padding: 3px 12px; border-radius: 6px 6px 0 0; border: 1px solid transparent; border-bottom: 0; cursor: default; white-space: nowrap; color: var(--ui-muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.sheet-tab { display: inline-flex; align-items: center; gap: 6px; padding: 3px 12px; border-radius: 6px; border: 1px solid transparent; cursor: default; white-space: nowrap; color: var(--ui-muted); max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 .sheet-tab:hover { background: var(--ui-hover); }
-.sheet-tab.active { background: var(--ui-bg); color: var(--ui-accent); border-color: var(--ui-divider); font-weight: 600; }
+.sheet-tab.active { background: var(--ui-active); color: var(--ui-accent); border-color: var(--ui-divider); font-weight: 600; }
 .sheet-tab .tab-color { width: 100%; height: 3px; position: absolute; bottom: 0; left: 0; }
 .sheet-tab { position: relative; }
 .sheet-tab input { font: inherit; border: 1px solid var(--ui-accent); border-radius: 3px; padding: 0 4px; width: 120px; background: var(--ui-input); color: var(--ui-fg); user-select: text; -webkit-user-select: text; }
