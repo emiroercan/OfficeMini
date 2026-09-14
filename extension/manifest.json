@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OfficeMini",
-  "version": "0.0.0",
+  "version": "0.3.8",
   "description": "Open .docx and .xlsx links in an editor in the browser instead of downloading them.",
   "icons": {
     "16": "icons/16.png",
