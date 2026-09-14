@@ -758,6 +758,8 @@ export class Grid {
     // dblclick for the same gesture must not fit it again.
     if (Date.now() - this.autofitAt < 600) return;
     const hit = this.hitTest(e);
+    // Double-clicking the fill handle (bottom-right of the selection) fills down, like Excel.
+    if (hit.type === "fillHandle") { this.autoFillDown(); return; }
     if (hit.type === "colResize") { this.ev.onAutoFit("col", hit.c); return; }
     if (hit.type === "rowResize") { this.ev.onAutoFit("row", hit.r); return; }
     // Double-clicking anywhere on a column/row header fits it, not only the thin border - the
@@ -775,6 +777,27 @@ export class Grid {
       if (this.autofitHeaderBorder(e, hit.r, hit.c)) return;
       this.setActive(hit.r, hit.c); this.ev.onEdit(null);
     }
+  }
+
+  /**
+   * Double-click the fill handle: fill the selection down as far as the neighbouring column's data
+   * reaches (the column to the left, or the right when the left is empty) - Excel's shortcut for
+   * carrying a formula down a table without dragging.
+   */
+  private autoFillDown() {
+    const s = this.sheet();
+    const src = this.selection.ranges[0];
+    const has = (r: number, c: number) => { const cell = s.cells.get(key(r, c)); return !!cell && cell.v !== null && cell.v !== ""; };
+    const probe = (c: number): number => {
+      if (c < 0 || c >= MAXC || !has(src.r2 + 1, c)) return -1;
+      let r = src.r2 + 1;
+      while (r + 1 <= s.maxRow && has(r + 1, c)) r++;
+      return r;
+    };
+    let last = probe(src.c1 - 1);
+    if (last < 0) last = probe(src.c2 + 1);
+    if (last <= src.r2) return;
+    this.ev.onFill(src, { ...src, r2: last });
   }
 
   hyperlinkAt(r: number, c: number): Hyperlink | null {

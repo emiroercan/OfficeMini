@@ -864,7 +864,12 @@ function onCopyCut(e: ClipboardEvent, cut: boolean) {
   if (t !== keyProxy || !app.grid || app.editor?.active) return; // find bar, name box, cell editor: native behaviour
   e.preventDefault();
   const clip = prepareCopy(cut);
-  if (clip) { e.clipboardData.setData("text/plain", clip.text); e.clipboardData.setData("text/html", clip.html); }
+  if (clip) {
+    e.clipboardData.setData("text/plain", clip.text); e.clipboardData.setData("text/html", clip.html);
+    // Some webviews accept the setData above but never hand it to the Windows clipboard; a deferred
+    // async write (after this event, so no concurrent write) makes sure it lands there too.
+    setTimeout(() => { void writeOsClipboard(clip.text, clip.html); }, 0);
+  }
 }
 document.addEventListener("copy", (e) => onCopyCut(e, false));
 document.addEventListener("cut", (e) => onCopyCut(e, true));
@@ -891,11 +896,19 @@ function prepareCopy(cut: boolean): { text: string; html: string } | null {
   return res;
 }
 
-async function writeClipboard(text: string, html: string) {
+/**
+ * Best-effort write to the OS clipboard, tried on every copy so the cells also paste into other
+ * apps (Excel, Notepad). The internal clip already drives in-app paste; this is on top of it. The
+ * async API is preferred (full text + html); writeText and a hidden-textarea execCommand are
+ * fallbacks for webviews that block it. All async, so it never runs inside a native copy event.
+ */
+async function writeOsClipboard(text: string, html: string) {
   try {
-    const item = new ClipboardItem({ "text/plain": new Blob([text], { type: "text/plain" }), "text/html": new Blob([html], { type: "text/html" }) });
-    await navigator.clipboard.write([item]);
-  } catch {
+    await navigator.clipboard.write([new ClipboardItem({ "text/plain": new Blob([text], { type: "text/plain" }), "text/html": new Blob([html], { type: "text/html" }) })]);
+    return;
+  } catch { /* try a plainer path */ }
+  try { await navigator.clipboard.writeText(text); return; } catch { /* fall through */ }
+  try {
     pendingCopy = { text, html };
     const ta = el("textarea", { style: { position: "fixed", left: "-1000px", top: "0" } });
     ta.value = text || " ";
@@ -904,15 +917,14 @@ async function writeClipboard(text: string, html: string) {
     try { document.execCommand("copy"); } catch { /* ignore */ }
     ta.remove();
     focusGrid();
-  }
+  } catch { /* internal paste still works */ }
 }
 
-/** Menu / context-menu copy: same as Ctrl+C but we have to write the clipboard ourselves. */
-async function copySelection(cut: boolean) {
+/** Menu / context-menu copy: no native event fires, so write the OS clipboard ourselves. */
+function copySelection(cut: boolean) {
   if (app.editor?.active) return; // textarea handles its own copy
   const clip = prepareCopy(cut);
-  if (!clip) return;
-  await writeClipboard(clip.text, clip.html);
+  if (clip) void writeOsClipboard(clip.text, clip.html);
 }
 
 async function pasteFromSystem(mode: PasteMode = "all") {

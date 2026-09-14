@@ -253,7 +253,10 @@ export class CellEditor {
   private canPointArrows(): boolean {
     if (this.pointing) return true;
     const ta = this.current();
-    return /^=\s*$/.test(ta.value.slice(0, ta.selectionStart));
+    const before = ta.value.slice(0, ta.selectionStart);
+    // The start of the formula, or right after a separator or "(" (a fresh argument): a new
+    // reference is expected there, so arrows point. Anywhere else they move the caret.
+    return /^=\s*$/.test(before) || /[,;(]\s*$/.test(before);
   }
 
   /** Can a reference be inserted at the caret (after an operator, "(", "," or at a ref we are already pointing at)? */
