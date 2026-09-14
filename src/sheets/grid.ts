@@ -1064,14 +1064,15 @@ export class Grid {
         lines.push(cur.trimEnd());
       }
     } else lines.push(text);
-    // Horizontal overflow into empty neighbours (text only, single line)
+    // Horizontal overflow into empty neighbours (single line, not wrapped). A number behaves like
+    // plain text: it spills into the empty cells to the RIGHT and its tail is clipped by the first
+    // non-empty cell — never ####, never shrunk. Left-aligned text spills the same way; explicitly
+    // centred cells spill both ways; right-aligned text spills left, the way Excel does.
     let clipX = x, clipW = w;
+    let eff = halign;
     let textW = ctx.measureText(lines[0]).width;
     if (!cs.wrap && lines.length === 1 && textW + 2 * pad + indent > w) {
-      // Numbers spill into empty neighbours exactly like text - never ####. One that still does
-      // not fit is shrunk below, inside the clip.
-      if (halign === "left" || halign === "center") {
-        // extend right over empty cells
+      const spillRight = (): number => {
         let cc = c + 1, ext = 0;
         const merge = mergeAt(s, r, c);
         if (merge) cc = merge.c2 + 1;
@@ -1081,14 +1082,19 @@ export class Grid {
           if (mergeAt(s, r, cc)) break;
           ext += this.colWidthPx(cc); cc++;
         }
-        clipW = w + ext;
-        if (halign === "center") {
-          // also extend left
-          let lc = c - 1, lext = 0;
-          while (lext < (textW + 2 * pad - w) / 2 && lc >= 0 && c - lc < 60) { const nb = s.cells.get(key(r, lc)); if ((nb && nb.v !== null && nb.v !== "") || mergeAt(s, r, lc)) break; lext += this.colWidthPx(lc); lc--; }
-          clipX = x - lext; clipW = w + ext + lext;
-        }
-      } else if (halign === "right") {
+        return ext;
+      };
+      if (halign === "left" || (isNum && halign === "right")) {
+        // numbers and left text: bleed right, tail hidden when the neighbour is filled
+        clipW = w + spillRight();
+        eff = "left";
+      } else if (halign === "center") {
+        const ext = spillRight();
+        let lc = c - 1, lext = 0;
+        while (lext < (textW + 2 * pad - w) / 2 && lc >= 0 && c - lc < 60) { const nb = s.cells.get(key(r, lc)); if ((nb && nb.v !== null && nb.v !== "") || mergeAt(s, r, lc)) break; lext += this.colWidthPx(lc); lc--; }
+        clipX = x - lext; clipW = w + ext + lext;
+      } else {
+        // right-aligned text spills left
         let lc = c - 1, lext = 0;
         while (lext < textW + 2 * pad - w && lc >= 0 && c - lc < 60) { const nb = s.cells.get(key(r, lc)); if ((nb && nb.v !== null && nb.v !== "") || mergeAt(s, r, lc)) break; lext += this.colWidthPx(lc); lc--; }
         clipX = x - lext; clipW = w + lext;
@@ -1096,25 +1102,18 @@ export class Grid {
     }
     ctx.save();
     ctx.beginPath(); ctx.rect(clipX, y, clipW, h); ctx.clip();
-    // A number that still does not fit after spilling is drawn smaller, never cut short: a
-    // clipped number shows a wrong value, which is worse than the #### it replaces. The font
-    // change lives inside save/restore, so the next cell starts from its own size.
-    if (isNum && typeof cell.v === "number" && !cs.wrap && lines.length === 1 && textW + 2 * pad + indent > clipW) {
-      const px = Math.max(1, fontPx * (clipW - 2 * pad - indent) / textW);
-      ctx.font = ctx.font.replace(/(\d+(?:\.\d+)?)px/, px.toFixed(2) + "px");
-    }
     const totalH = lines.length * lineH;
     let ty: number;
     if (cs.valign === "top") ty = y + pad / 2 + fontPx;
     else if (cs.valign === "center") ty = y + (h - totalH) / 2 + fontPx;
     else ty = y + h - totalH + fontPx - pad / 2 - (lineH - fontPx) / 2;
-    ctx.textAlign = halign === "right" ? "right" : halign === "center" ? "center" : "left";
-    const tx = halign === "right" ? clipX + clipW - pad - indent : halign === "center" ? clipX + clipW / 2 : clipX + pad + indent;
+    ctx.textAlign = eff === "right" ? "right" : eff === "center" ? "center" : "left";
+    const tx = eff === "right" ? clipX + clipW - pad - indent : eff === "center" ? clipX + clipW / 2 : clipX + pad + indent;
     for (const line of lines) {
       ctx.fillText(line, tx, ty);
       if (cs.underline || cs.strike) {
         const lw = ctx.measureText(line).width;
-        const lx = halign === "right" ? tx - lw : halign === "center" ? tx - lw / 2 : tx;
+        const lx = eff === "right" ? tx - lw : eff === "center" ? tx - lw / 2 : tx;
         ctx.strokeStyle = ctx.fillStyle as string; ctx.lineWidth = Math.max(1, z);
         if (cs.underline) { ctx.beginPath(); ctx.moveTo(lx, ty + 2 * z); ctx.lineTo(lx + lw, ty + 2 * z); ctx.stroke(); }
         if (cs.strike) { ctx.beginPath(); ctx.moveTo(lx, ty - fontPx * 0.3); ctx.lineTo(lx + lw, ty - fontPx * 0.3); ctx.stroke(); }
