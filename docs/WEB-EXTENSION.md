@@ -68,9 +68,23 @@ kept, so reloading the tab reopens the document; `sweepInbox()` deletes copies o
 
 ### Local files
 
-A file dropped onto a tab that does not handle drops makes Chrome navigate to its `file://` URL,
-and that becomes a download — a second copy in Downloads. `onCreated` cancels the copy (the
-original is already on disk, so nothing is lost), reads the original, and opens it the same way.
+A file dropped onto a tab that does not handle drops makes Chrome navigate to its `file://` URL.
+What happens next depends on whether anything claims the type:
+
+- **Nothing does** (a clean profile): the navigation becomes a download — a second copy in
+  Downloads. `downloads.onCreated` cancels the copy (the original is already on disk, so nothing
+  is lost), reads the original, and opens it the same way.
+- **Another extension does**: Chrome *shows* the file in the tab and never downloads it. The
+  real case is Google's old **Office Editing for Docs, Sheets & Slides**
+  (`gbkeegbaiigmenfmjfclcdgdpimamgkj`, internally `qo_documents`), still installed in many
+  profiles. It registers a MIME handler for Word, Excel and CSV and renders them in its own viewer
+  — or, as in the owner's profile, fails and leaves *"Couldn't load plugin"* on a `file://` page.
+  Either way `tabs.onUpdated` catches that tab once it has loaded and replaces it with the editor,
+  in the same tab.
+
+A drop can reach both listeners, so the first to *claim* the file's URL (in
+`chrome.storage.session`, ten seconds) opens it and the other stands down. Chrome only tells an
+extension a `file://` tab's URL when file access is on — which reading the file needs anyway.
 
 ### Without file access
 
@@ -132,7 +146,9 @@ Settings live in `chrome.storage.sync`, so they follow the Chrome profile.
 ## Known gaps
 
 1. **File access is a manual switch.** Chrome has no API to request it. `file-access.html` walks
-   through it, and plain links work without it.
+   through it, and plain links work without it. A local file *shown* in its tab (the plugin case
+   above) is not even noticed while the switch is off: Chrome hides a `file://` tab's URL from
+   extensions without it, so that tab just keeps its error page.
 2. **A file that fails to open has already left Downloads** when *keep a copy* is off: the copy is
    removed once the bytes are parked, not once the editor has parsed them. Turn the extension's
    switch off and download it again, or keep copies.
@@ -146,10 +162,11 @@ Settings live in `chrome.storage.sync`, so they follow the Chrome profile.
 
 ## Testing
 
-`npm run test:ext` builds the extension and runs `scripts/e2e-ext.mjs`: the real extension in
-real Edge and Chrome, driven over the DevTools protocol, with generated fixtures and real mouse
-clicks. It covers every download shape above, local files, *keep a copy*, the master switch, and
-the whole file-access-off path including the file opening by itself once the switch goes on.
+`npm run test:ext` builds the extension and runs `scripts/e2e-ext.mjs`: the real extension in real Chrome, headless, driven over the DevTools protocol, with generated fixtures and real mouse
+clicks. It covers every download shape above, local files both downloaded and shown in their tab,
+*keep a copy* and the master switch. The file-access-off path - the explainer, and the file
+opening once the switch goes on - is checked by hand: Chrome disables a pipe-loaded extension
+when that switch flips.
 `docs/WEB-TESTS.md` §7 has the details and the reference result.
 
 ## Before the Chrome Web Store

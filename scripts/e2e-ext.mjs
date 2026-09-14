@@ -1,16 +1,20 @@
-// End-to-end test of the Chrome extension: the real extension in a real Chromium, driven over the
+// End-to-end test of the Chrome extension: the real extension in real Chrome, driven over the
 // DevTools protocol. Every case is a genuine click or a genuine navigation - nothing in the
 // extension is stubbed, which is the point: stubbed checks passed while export buttons, blob
 // downloads and local files all failed in a real browser.
 //
-//   npm run test:ext                   build, then run in every browser found (in parallel)
-//   node scripts/e2e-ext.mjs edge      one browser: edge | chrome   (OM_EDGE / OM_CHROME = exe)
+//   npm run test:ext             build, then run
+//   node scripts/e2e-ext.mjs     run against the current dist-ext   (OM_CHROME = path to chrome)
 //
-// Edge loads the extension with --load-extension. Branded Chrome has ignored that flag since 137,
-// so there it is loaded with Extensions.loadUnpacked over --remote-debugging-pipe - and Chrome
-// disables an extension loaded that way the moment file access is switched off
-// (disableReasons.unsupportedDeveloperExtension). The file-access phases therefore run in Edge
-// only. An ordinary "Load unpacked" install is not affected.
+// Chrome runs headless, so nothing appears on the desktop; OM_HEADED=1 to watch. Chrome only, by
+// the owner's choice.
+//
+// Branded Chrome has ignored --load-extension since 137, so the extension is loaded with
+// Extensions.loadUnpacked over --remote-debugging-pipe. Chrome disables an extension loaded that
+// way the moment its file access is switched off (disableReasons.unsupportedDeveloperExtension),
+// so the file-access-off path - the explainer page, and the file opening once the switch goes on -
+// is not covered here; docs/WEB-TESTS.md section 7 lists it as a check by hand. An ordinary
+// "Load unpacked" install is not affected.
 import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
@@ -23,8 +27,6 @@ const ROOT = path.resolve(import.meta.dirname, "..");
 const EXT = path.join(ROOT, "dist-ext");
 
 const CANDIDATES = {
-  edge: [process.env.OM_EDGE, "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
-    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge", "/usr/bin/microsoft-edge"],
   chrome: [process.env.OM_CHROME, "C:/Program Files/Google/Chrome/Application/chrome.exe", path.join(process.env.LOCALAPPDATA || "/nonexistent", "Google/Chrome/Application/chrome.exe"),
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/google-chrome"],
 };
@@ -52,6 +54,7 @@ function minimalXlsx() {
 }
 const XLSX = Buffer.from(minimalXlsx());
 const CSV = Buffer.from(`${CSV_A1},Şehir\nAyşe,İzmir\nMehmet,Ankara\n`, "utf-8");
+const TXT = Buffer.from("OfficeMini e2e\nA text file Chrome shows in the tab instead of downloading.\n", "utf-8");
 
 const PAGE = `<!doctype html><meta charset=utf-8><title>download cases</title>
 <style>body{font:16px system-ui;line-height:2.2}</style>
@@ -93,15 +96,14 @@ async function suite(tag, exe, { port, web }) {
   fs.rmSync(WORK, { recursive: true, force: true });
   fs.mkdirSync(DL, { recursive: true });
   fs.mkdirSync(LOCAL, { recursive: true });
-  const writeLocal = () => { fs.writeFileSync(path.join(LOCAL, "Local Book.xlsx"), XLSX); fs.writeFileSync(path.join(LOCAL, "local list.csv"), CSV); };
+  const LOCALS = { "Local Book.xlsx": XLSX, "local list.csv": CSV, "notes.txt": TXT };
+  const writeLocal = () => { for (const [f, data] of Object.entries(LOCALS)) fs.writeFileSync(path.join(LOCAL, f), data); };
   writeLocal();
 
   const rows = [], notes = [];
   const server = await serve(web);
-  const pipe = tag === "chrome";
   const b = await launch({
-    exe, port, profile: path.join(WORK, "profile"), pipe,
-    args: pipe ? [] : [`--load-extension=${EXT}`, `--disable-extensions-except=${EXT}`],
+    exe, port, profile: path.join(WORK, "profile"), pipe: true,
     prepare: (profile) => {
       // A realistic download setup: a fixed folder and no "ask where to save" prompt.
       fs.mkdirSync(path.join(profile, "Default"), { recursive: true });
@@ -114,7 +116,7 @@ async function suite(tag, exe, { port, web }) {
 
   let cdp = null;
   try {
-    if (pipe) await b.pipeSend("Extensions.loadUnpacked", { path: EXT });
+    await b.pipeSend("Extensions.loadUnpacked", { path: EXT });
     cdp = connect(b.version.webSocketDebuggerUrl);
     await cdp.ready;
 
@@ -153,17 +155,6 @@ async function suite(tag, exe, { port, web }) {
 
     const settings = (patch) => sw.evaluate(`(async () => { const k = 'settings'; const cur = (await chrome.storage.sync.get(k))[k] || {}; await chrome.storage.sync.set({ [k]: { ...cur, ...${JSON.stringify(patch)} } }); })()`);
 
-    /** Flip "Allow access to file URLs" the way the chrome://extensions toggle does. */
-    async function setFileAccess(on) {
-      const { targetId } = await cdp.send("Target.createTarget", { url: "chrome://extensions/" });
-      const page = await attach(cdp, targetId);
-      await sleep(1500);
-      await page.evaluate(`new Promise((res) => chrome.developerPrivate.updateExtensionConfiguration({ extensionId: ${JSON.stringify(extId)}, fileAccess: ${on} }, res))`);
-      await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
-      await sleep(2500);
-      const left = (await targets(port)).filter((t) => t.url.includes(extId)).map((t) => t.type + ":" + t.url.split(extId)[1].split("?")[0]);
-      notes.push(`after fileAccess=${on}: ${left.length ? left.join(", ") : "nothing of ours running"}`);
-    }
 
     // -- helpers --
     const pages = async () => (await targets(port)).filter((t) => t.type === "page");
@@ -198,11 +189,21 @@ async function suite(tag, exe, { port, web }) {
       for (const f of fs.readdirSync(DL)) fs.rmSync(path.join(DL, f), { force: true });
       writeLocal();
     }
-    async function observe(wait = 6000) {
+    /** What the case left behind. `ctx.targetId` is the tab the case itself opened, when it opened one. */
+    async function observe(wait = 6000, ctx) {
       await sleep(wait);
       const editors = [];
       for (const t of await ours("index.html")) editors.push(await inspectEditor(t));
-      return { editors, explainer: (await ours("file-access.html")).length > 0, downloads: dlFiles() };
+      const all = await pages();
+      // What became of the case's own tab. Counting every tab instead proved fragile: the browser
+      // can have a tab of its own open that has nothing to do with the case.
+      let caseTab;
+      if (ctx && ctx.targetId) {
+        const t = all.find((x) => x.id === ctx.targetId);
+        caseTab = !t ? "(closed)" : t.url.includes(`${extId}/index.html`) ? "editor" : t.url.includes(`${extId}/file-access.html`) ? "explainer" : t.url.startsWith("file:") ? "file" : t.url.slice(0, 80);
+      }
+      const strays = all.filter((t) => t.url !== "about:blank" && !t.url.includes(extId) && !(ctx && t.id === ctx.targetId)).map((t) => t.url.slice(0, 80));
+      return { editors, explainer: (await ours("file-access.html")).length > 0, downloads: dlFiles(), caseTab, strays };
     }
     function verdict(phase, name, got, want, errs) {
       const fails = [];
@@ -212,7 +213,8 @@ async function suite(tag, exe, { port, web }) {
       if (want.a1 !== undefined && got.editors[0] && got.editors[0].a1 !== want.a1) fails.push(`A1 ${JSON.stringify(got.editors[0].a1)} != "${want.a1}"`);
       if (!!want.explainer !== got.explainer) fails.push("explainer " + got.explainer);
       if (JSON.stringify(got.downloads) !== JSON.stringify(want.downloads)) fails.push(`Downloads ${JSON.stringify(got.downloads)} != ${JSON.stringify(want.downloads)}`);
-      for (const f of ["Local Book.xlsx", "local list.csv"]) if (!fs.existsSync(path.join(LOCAL, f))) fails.push("LOCAL ORIGINAL DELETED: " + f);
+      if (want.caseTab !== undefined && got.caseTab !== want.caseTab) fails.push(`the case's own tab is ${got.caseTab}, expected ${want.caseTab}`);
+      for (const f of Object.keys(LOCALS)) if (!fs.existsSync(path.join(LOCAL, f))) fails.push("LOCAL ORIGINAL DELETED: " + f);
       for (const e of got.editors) if (e.error) fails.push(e.error);
       fails.push(...errs);
       rows.push({ phase, case: name, result: fails.length ? "FAIL" : "pass", detail: fails.join("; ") });
@@ -220,13 +222,15 @@ async function suite(tag, exe, { port, web }) {
     async function run(phase, name, act, want) {
       await reset();
       const before = swLog.length;
-      await act();
-      verdict(phase, name, await observe(), want, swLog.slice(before));
+      const ctx = await act();
+      const got = await observe(6000, ctx);
+      if (got.strays.length) notes.push(`${name}: other tabs open - ${got.strays.join(", ")}`);
+      verdict(phase, name, got, want, swLog.slice(before));
     }
 
     const pageUrl = `http://127.0.0.1:${web}/page.html`;
     const webCase = (id) => async () => { const tab = await newTab(pageUrl); await click(tab, id); };
-    const localCase = (file) => async () => { await newTab(pathToFileURL(path.join(LOCAL, file)).href); };
+    const localCase = (file) => async () => ({ targetId: (await newTab(pathToFileURL(path.join(LOCAL, file)).href)).targetId });
 
     // -- phase 1: file access on, defaults (nothing kept in Downloads) --
     const on0 = await sw.evaluate("chrome.extension.isAllowedFileSchemeAccess()");
@@ -240,6 +244,14 @@ async function suite(tag, exe, { port, web }) {
     await run(P1, "local .xlsx into a tab", localCase("Local Book.xlsx"), { editor: "Local Book.xlsx", a1: XLSX_A1, downloads: [] });
     await run(P1, "local .csv into a tab", localCase("local list.csv"), { editor: "local list.csv", a1: CSV_A1, downloads: [] });
 
+    // -- a local file Chrome SHOWS in the tab instead of downloading. In a real profile that is an
+    // Office file claimed by another extension that fails ("Couldn't load plugin"); a clean profile
+    // has no such extension, so a .txt stands in - the same path, a file:// page that commits. --
+    await run(P1, "local .txt shown, text type off", localCase("notes.txt"), { editor: null, downloads: [], caseTab: "file" });
+    await settings({ groups: { text: true } });
+    await run("text type on", "local file shown in a tab -> that tab", localCase("notes.txt"), { editor: "notes.txt", downloads: [], caseTab: "editor" });
+    await settings({ groups: {} });
+
     // -- phase 2: keep a copy --
     await settings({ keepCopy: true });
     await run("keep a copy", "export endpoint", webCase("cd"), { editor: "Export.xlsx", a1: XLSX_A1, downloads: ["Export.xlsx"] });
@@ -252,24 +264,7 @@ async function suite(tag, exe, { port, web }) {
     await run("switched off", "local .xlsx into a tab", localCase("Local Book.xlsx"), { editor: null, downloads: ["Local Book.xlsx"] });
     await settings({ enabled: true });
 
-    if (pipe) {
-      rows.push({ phase: "access off / on", case: "(not run in Chrome)", result: "skip", detail: "Chrome disables a pipe-loaded extension when file access is switched off; Edge covers these" });
-    } else {
-      // -- phase 4: file access off --
-      await setFileAccess(false);
-      await findSW();
-      const P4 = (sw && (await sw.evaluate("chrome.extension.isAllowedFileSchemeAccess()")) === false) ? "access off" : "access off (NOT OFF)";
-      await run(P4, "plain link (fetched again)", webCase("plain"), { editor: "Plain.xlsx", a1: XLSX_A1, downloads: [] });
-      await run(P4, "export endpoint (fetched again)", webCase("cd"), { editor: "Export.xlsx", a1: XLSX_A1, downloads: [] });
-      await run(P4, "blob -> explainer, file kept", webCase("blob"), { editor: null, explainer: true, downloads: ["Blob Now.xlsx"] });
-      await run(P4, "local .xlsx -> explainer", localCase("Local Book.xlsx"), { editor: null, explainer: true, downloads: [] });
-
-      // -- phase 5: turn it on with the explainer open. Look BEFORE waking anything: the file
-      // has to open on its own, because that is what a person gets.
-      const before = swLog.length;
-      await setFileAccess(true);
-      verdict("access turned on", "pending opens with no help", await observe(5000), { editor: "Local Book.xlsx", a1: XLSX_A1, downloads: [] }, swLog.slice(before));
-    }
+    notes.push("file access off -> explainer -> on: not covered here (Chrome disables a pipe-loaded extension when the switch flips); a check by hand");
   } catch (e) {
     rows.push({ phase: "harness", case: "-", result: "FAIL", detail: e.message });
   } finally {
@@ -291,7 +286,7 @@ const wanted = process.argv[2] ? [process.argv[2]] : Object.keys(CANDIDATES);
 const todo = [];
 for (const tag of wanted) {
   const exe = findExe(tag);
-  if (exe) todo.push([tag, exe]); else console.log(`${tag}: not found${CANDIDATES[tag] ? "" : " (use edge or chrome)"}, skipped`);
+  if (exe) todo.push([tag, exe]); else console.log(`${tag}: not found${CANDIDATES[tag] ? "" : " (only chrome is tested)"}, skipped`);
 }
 if (!todo.length) { console.error("No browser to test with."); process.exit(2); }
 

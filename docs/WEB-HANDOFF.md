@@ -201,4 +201,9 @@ is testable against the desktop app's behaviour, which is the reference implemen
   `--remote-debugging-pipe` (with `--enable-unsafe-extension-debugging`) still works, and the
   debugging port can stay open alongside. Edge still honours the flag.
 - **Chrome disables a pipe-loaded extension when its file access is switched off**
-  (`unsupportedDeveloperExtension`); it comes back when switched on. Test that path in Edge.
+  (`unsupportedDeveloperExtension`); it comes back when switched on. That path is checked by hand; testing is Chrome only.
+- **A clean test profile hides what real profiles have.** Every test passed while dropping a file
+  failed for the owner: Google's old *Office Editing for Docs, Sheets & Slides* claims Office
+  types, so Chrome shows the file in the tab (in that profile, failing with "Couldn't load
+  plugin") instead of downloading it, and no download event ever fires. Look at what is installed in the failing profile — its extension
+  manifests are readable — before trusting a green run.

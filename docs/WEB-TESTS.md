@@ -155,7 +155,11 @@ $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--remote-debugging-port=9222'
 Start-Process chrome.exe "--app=http://localhost:1420/"
 ```
 
-then drive it over CDP — `http://127.0.0.1:9222/json/list` for the target, a WebSocket and
+Add `--headless=new` (and a throwaway `--user-data-dir`) unless you mean to watch: a window that
+pops up takes focus from whoever is using the machine. `scripts/cdp.mjs` launches headless by
+default, and `OM_HEADED=1` turns the window back on.
+
+Then drive it over CDP — `http://127.0.0.1:9222/json/list` for the target, a WebSocket and
 `Runtime.evaluate` (Node's global `WebSocket` is enough). This is how the desktop app's grid was
 tested; the same script works against Chrome.
 
@@ -180,8 +184,8 @@ downloads and local files all failed in a real browser. So the test is the real 
 real browser:
 
 ```bash
-npm run test:ext                 # build, then scripts/e2e-ext.mjs in every Chromium found
-node scripts/e2e-ext.mjs edge    # one browser: edge | chrome
+npm run test:ext                 # build, then scripts/e2e-ext.mjs in Chrome, headless
+node scripts/e2e-ext.mjs         # against the current dist-ext, without building
 ```
 
 It serves its own page and generated fixtures (no personal documents), clicks with real mouse
@@ -191,23 +195,32 @@ touched:
 
 | phase | cases |
 |---|---|
-| file access on | plain link; export endpoint (`Content-Disposition`, `octet-stream`, no extension in the URL); `.csv` link; blob revoked at once; blob revoked later; a `.pdf` left alone; a local `.xlsx` and `.csv` opened into a tab |
+| file access on | plain link; export endpoint (`Content-Disposition`, `octet-stream`, no extension in the URL); `.csv` link; blob revoked at once; blob revoked later; a `.pdf` left alone; a local `.xlsx` and `.csv` opened into a tab; a local file Chrome *shows* instead of downloading — left alone while its type is off, replaced by the editor in that same tab once it is on |
 | keep a copy | the copy stays in Downloads |
 | switched off | nothing is touched |
-| file access off | plain links fetched again; a blob and a local file open the explainer |
-| access turned on | the waiting file opens with no further action |
 
-PASS: every row. Reference result: 17 of 17 in Edge 152; 12 of 12 in Chrome 152, which skips the
-last two phases (below).
+PASS: every row. Reference result: 14 of 14 in Chrome 152.
 
 - **Branded Chrome ignores `--load-extension`** since version 137. The script loads the extension
   there with `Extensions.loadUnpacked` over `--remote-debugging-pipe`, keeping the port open for
   everything else.
 - **Chrome disables a pipe-loaded extension when file access is switched off**
-  (`disableReasons.unsupportedDeveloperExtension`), so the file-access phases run in Edge only. A
-  "Load unpacked" install is not affected.
+  (`disableReasons.unsupportedDeveloperExtension`), so the file-access-off path is not automated:
+  it is a check by hand below. A "Load unpacked" install is not affected.
+- **Chrome only, headless.** Nothing is tested in Edge, and no browser window appears while the
+  script runs (`OM_HEADED=1` to watch one). It is not meant to run on every update - run it when
+  the extension's own code changes.
 - The worker is found by attaching to service-worker targets and asking each for its manifest
   name. After a reload it may be asleep; opening the popup wakes it.
+- **A file shown instead of downloaded** is stood in for by a `.txt`, because a clean profile has
+  nothing that claims Office types. The real trigger — Office Editing for Docs, Sheets & Slides —
+  was reproduced once by copying an installed copy of it (its `manifest.json` keeps the `key`, so
+  it loads unpacked under its real ID, which is what the MIME-handler allowlist checks; delete its
+  `_metadata` folder first) into a throwaway profile beside `dist-ext`. Alone, a dropped `.xlsx`
+  stays in its tab, rendered by that extension's own viewer, with nothing downloaded — in the
+  owner's profile the same extension fails there instead, with *Couldn't load plugin*, which a
+  fresh copy did not reproduce. With OfficeMini loaded too, the same tab becomes the editor with
+  the workbook loaded. Reproduced in Chrome 152.
 
 **The page half** — everything after the editor tab opens — is ordinary page code, and can still
 be checked in the browser pane against `npm run dev:ext`.

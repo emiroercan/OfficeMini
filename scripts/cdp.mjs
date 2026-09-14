@@ -10,11 +10,14 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * branded Chrome needs for Extensions.loadUnpacked (it ignores --load-extension since 137); the
  * returned `pipeSend` talks over it while everything else uses the ordinary WebSocket port.
  */
-export async function launch({ exe, port, profile, args = [], url = "about:blank", prepare, pipe = false }) {
+export async function launch({ exe, port, profile, args = [], url = "about:blank", prepare, pipe = false, headless = !process.env.OM_HEADED }) {
   fs.rmSync(profile, { recursive: true, force: true });
   fs.mkdirSync(profile, { recursive: true });
   if (prepare) prepare(profile);
   const proc = spawn(exe, [
+    // Headless by default: a test browser must never pop up on the desktop of someone who is
+    // using the machine. OM_HEADED=1 shows the window, for watching a run on purpose.
+    ...(headless ? ["--headless=new"] : []),
     ...(pipe ? ["--remote-debugging-pipe", "--enable-unsafe-extension-debugging"] : []),
     `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`,
     "--no-first-run", "--no-default-browser-check", "--disable-sync", "--disable-background-networking",

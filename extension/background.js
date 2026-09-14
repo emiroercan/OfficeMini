@@ -14,9 +14,12 @@
 // plain link is fetched again instead, and anything else opens file-access.html, which explains
 // the switch and finishes the job once it is on.
 //
-// A local file opened into Chrome - dropped on a tab - arrives as a download of a file:// URL.
-// Letting it run would put a second copy in Downloads, so it is cancelled and the original is
-// opened instead. Cancelling loses nothing: the file is already on disk.
+// A local file opened into Chrome - dropped on a tab - arrives in one of two ways. Usually as a
+// download of its file:// URL, which would put a second copy in Downloads: that is cancelled and
+// the original opened (cancelling loses nothing, the file is already on disk). But when another
+// extension claims the type - Google's old "Office Editing for Docs, Sheets & Slides" registers
+// for Word, Excel and CSV and then fails with "Couldn't load plugin" - Chrome shows the file in
+// the tab and never downloads it. That tab is replaced with the editor instead.
 //
 // The bytes are parked in the origin private file system under inbox/<token>; the editor tab
 // shares the chrome-extension:// origin, so it picks them up by token (src/files-web.ts).
@@ -143,8 +146,11 @@ async function sweepInbox() {
 
 // ---- opening ----------------------------------------------------------------
 
-async function openEditor(query, openerTabId) {
-  const opts = { url: chrome.runtime.getURL("index.html") + "?" + new URLSearchParams(query).toString() };
+/** Open the editor in a new tab, or in place of `tabId` when a tab is already showing the file. */
+async function openEditor(query, { tabId, openerTabId } = {}) {
+  const url = chrome.runtime.getURL("index.html") + "?" + new URLSearchParams(query).toString();
+  if (tabId !== undefined) { await chrome.tabs.update(tabId, { url }); return; }
+  const opts = { url };
   if (openerTabId !== undefined) opts.openerTabId = openerTabId;
   await chrome.tabs.create(opts);
 }
@@ -152,17 +158,40 @@ async function openEditor(query, openerTabId) {
 const fileAccess = () => chrome.extension.isAllowedFileSchemeAccess();
 
 /** The one thing that needs the user: explain the switch, and remember what to open after. */
-async function askForFileAccess(name, retry) {
+async function askForFileAccess(name, retry, tabId) {
   await chrome.storage.local.set({ pending: { ...retry, name, at: Date.now() } });
-  await chrome.tabs.create({ url: chrome.runtime.getURL("file-access.html") + "?" + new URLSearchParams({ name }).toString() });
+  const url = chrome.runtime.getURL("file-access.html") + "?" + new URLSearchParams({ name }).toString();
+  if (tabId !== undefined) await chrome.tabs.update(tabId, { url });
+  else await chrome.tabs.create({ url });
 }
 
-/** A file that is already on disk, opened into Chrome. */
-async function openLocal(url, name) {
-  if (!(await fileAccess())) return askForFileAccess(name, { kind: "local", url });
+/** A file that is already on disk, opened into Chrome - in place of `tabId`, when given. */
+async function openLocal(url, name, tabId) {
+  if (!(await fileAccess())) return askForFileAccess(name, { kind: "local", url }, tabId);
   const token = crypto.randomUUID();
   const final = await stash(token, url, name);
-  if (final) await openEditor({ inbox: token, name: final });
+  if (final) await openEditor({ inbox: token, name: final }, { tabId });
+}
+
+/**
+ * The same dropped file can reach both local-file listeners - as a download and as a page - and
+ * must open once: the first to claim its URL wins for ten seconds. Claims run one at a time, so
+ * two listeners firing together cannot both read "unclaimed". The chain is a module variable,
+ * which is fine for something that only has to last one burst of events.
+ */
+let claims = Promise.resolve(true);
+function claim(url) {
+  const next = claims.then(async () => {
+    const now = Date.now();
+    const { claimed = {} } = await chrome.storage.session.get("claimed");
+    for (const [u, at] of Object.entries(claimed)) if (now - at > 10000) delete claimed[u];
+    const mine = !claimed[url];
+    if (mine) claimed[url] = now;
+    await chrome.storage.session.set({ claimed });
+    return mine;
+  });
+  claims = next.catch(() => true);
+  return next;
 }
 
 /** A finished download: read the file Chrome wrote, or fetch the link again if we may not. */
@@ -226,7 +255,20 @@ chrome.downloads.onCreated.addListener(async (item) => {
   if (!activeExtensions(s).has(extOf(name))) return;
   try { await chrome.downloads.cancel(item.id); } catch { /* finished already */ }
   try { await chrome.downloads.erase({ id: item.id }); } catch { /* the row can stay */ }
-  await openLocal(url, name);
+  if (await claim(url)) await openLocal(url, name);
+});
+
+// A local file Chrome shows in the tab instead of downloading: an Office type that another
+// extension claims and fails to render, or a text file. No download happens, so the tab itself is
+// replaced with the editor. Chrome only tells an extension a file:// tab's URL when file access
+// is on - which reading the file needs anyway.
+chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
+  if (info.status !== "complete" || !tab.url || !tab.url.startsWith("file:")) return;
+  const s = await loadSettings();
+  if (!s.enabled) return;
+  const name = nameFromUrl(tab.url);
+  if (!activeExtensions(s).has(extOf(name))) return;
+  if (await claim(tab.url)) await openLocal(tab.url, name, tabId);
 });
 
 // A web download that has finished - by now Chrome knows its real name, whatever the URL said.
@@ -261,7 +303,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const token = crypto.randomUUID();
   const final = await stash(token, url, nameFromUrl(url));
   // Nothing parked: hand the page the URL, so that it tries itself and says what went wrong.
-  await openEditor(final ? { inbox: token, src: url, name: final } : { src: url, name: nameFromUrl(url) || "Document" }, tab && tab.id);
+  await openEditor(final ? { inbox: token, src: url, name: final } : { src: url, name: nameFromUrl(url) || "Document" }, { openerTabId: tab ? tab.id : undefined });
 });
 
 // Every start of the worker checks for a file that was waiting on the file-access switch. Chrome
