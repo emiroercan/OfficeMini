@@ -88,12 +88,15 @@ body {
 #menubar { display: flex; align-items: center; height: 34px; background: var(--ui-bg); padding: 0 4px; flex: none; }
 .menu-title { padding: 3px 10px; border-radius: 6px; cursor: default; flex: none; }
 /* Filename in the titlebar (no OS titlebar). Centred, click-through so drag/menus still work. */
-#doctitle { position: fixed; top: 0; left: 0; right: 0; height: 34px; display: flex; align-items: center; justify-content: center; pointer-events: none; color: var(--ui-muted); font-size: 12.5px; z-index: 1; padding: 0 160px; white-space: nowrap; overflow: hidden; }
+#doctitle { position: fixed; top: 0; left: 0; right: 0; height: 34px; display: flex; align-items: center; justify-content: center; pointer-events: none; color: var(--ui-muted); font-size: 12.5px; z-index: 1; padding: 0 190px; white-space: nowrap; overflow: hidden; }
 #doctitle:empty { display: none; }
 /* decorum's injected window-control strip: let clicks pass through everywhere except the buttons,
-   so our menus and the drag region underneath keep working. */
+   so our menus and the drag region underneath keep working. The buttons are <button>s that don't
+   inherit our text colour and are tiny by default, so force a theme colour and a legible size -
+   otherwise the glyphs vanish (dark-on-dark) or are too faint to see. */
 div[data-tauri-decorum-tb] { pointer-events: none !important; background: transparent !important; }
-.decorum-tb-btn { pointer-events: auto !important; color: var(--ui-fg); }
+.decorum-tb-btn { pointer-events: auto !important; color: var(--ui-fg) !important; font-size: 11px !important; opacity: 1 !important; }
+.decorum-tb-btn:hover { background-color: var(--ui-hover) !important; }
 .menu-title:hover, .menu-title.open { background: var(--ui-hover); }
 .menu-popup {
   position: fixed; z-index: 1000; min-width: 220px; background: var(--ui-popup); border: 1px solid var(--ui-divider);

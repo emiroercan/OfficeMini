@@ -20,7 +20,7 @@ import { shiftFormula } from "./formula/tokens";
 import { printDialog, printSheet } from "./print";
 import { pivotDialog, computePivot, pivotDefs, PivotDef } from "./pivot";
 import { setDarkMode } from "../docx/props";
-import { el, showMenu, MenuItem, tooltip, closeAllPopups, icon, showPopup, showNotice } from "../ui/widgets";
+import { el, showMenu, MenuItem, tooltip, closeAllPopups, icon, showPopup } from "../ui/widgets";
 import { showDialog, promptDialog, closeDialog, dialogOpen } from "../ui/dialog-core";
 import { checkForUpdates } from "../updater";
 import * as F from "../files";
@@ -295,35 +295,15 @@ async function confirmDiscard(): Promise<boolean> {
 }
 
 /**
- * Closing asks nothing: a recovery copy is written and the window goes (see the same
- * comment in main.ts). Cancel or Esc keeps the window; after CLOSE_COPY_TIMEOUT it
- * closes whether the copy finished or not.
+ * Alt+F4 just closes - reliably, with no prompt and no countdown. A recovery copy is written on
+ * the way out (best-effort; the periodic autosave is the real safety net), so the work can be
+ * recovered. The window's X, the menu and Ctrl+W still ask, since those are deliberate closes.
  */
-const CLOSE_COPY_TIMEOUT = 5000;
-let closePending = false;
-
 async function requestClose(): Promise<boolean> {
   if (!app.dirty) return true;
   if (!F.isTauri || app.settings.autosave === false || !F.closeWasAltF4()) return confirmDiscard();
-  if (closePending) return false;
-  closePending = true;
-  return new Promise<boolean>((resolve) => {
-    let done = false;
-    const finish = (close: boolean) => {
-      if (done) return;
-      done = true;
-      closePending = false;
-      clearTimeout(timer);
-      document.removeEventListener("keydown", onKey, true);
-      notice.close();
-      resolve(close);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); } };
-    const notice = showNotice(`Closing "${docName()}" - saving a copy you can recover.`, { label: "Cancel", onClick: () => finish(false) });
-    const timer = setTimeout(() => finish(true), CLOSE_COPY_TIMEOUT);
-    document.addEventListener("keydown", onKey, true);
-    writeRecoveryCopy().then(() => finish(true), (e) => { console.warn("close copy failed", e); finish(true); });
-  });
+  writeRecoveryCopy().catch((e) => console.warn("close copy failed", e));
+  return true;
 }
 
 async function closeWindowRequest() { if (await requestClose()) F.closeWindow(); }

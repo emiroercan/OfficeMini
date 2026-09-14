@@ -21,7 +21,7 @@ import { setZoomFactor, setHeaderFooters, setViewMode, paginationKey, pageAt, pa
 import { showContextMenu, tableMenu, pasteFromClipboard, ContextActions } from "./editor/contextmenu";
 import { buildToolbar, ToolbarHandle, colorPopup } from "./ui/toolbar";
 import { buildStatusbar, StatusHandle } from "./ui/statusbar";
-import { el, showMenu, MenuItem, tooltip, closeAllPopups, icon, showNotice } from "./ui/widgets";
+import { el, showMenu, MenuItem, tooltip, closeAllPopups, icon } from "./ui/widgets";
 import { showDialog, linkDialog, tableDialog, pageSetupDialog, paragraphDialog, goToPageDialog, shortcutsDialog, aboutDialog, closeDialog } from "./ui/dialogs";
 import { imageSize } from "./docx/images";
 import { twipsToPx } from "./docx/units";
@@ -994,37 +994,15 @@ const actions: ContextActions = {
 };
 
 /**
- * Closing (Alt+F4, the window X, Ctrl+W) asks nothing: a recovery copy of the unsaved
- * document is written and the window goes, and the next start offers the copy back. A
- * notice offers Cancel while the copy is being written; after CLOSE_COPY_TIMEOUT the
- * window closes whether the copy finished or not, so a slow write cannot trap the user.
- * Without recovery copies there would be no safety net, so that setting keeps the prompt.
+ * Alt+F4 just closes - reliably, with no prompt and no countdown. A recovery copy of the unsaved
+ * document is written on the way out (best-effort; the periodic autosave is the real safety net).
+ * The window's X, the menu and Ctrl+W still ask, since those are deliberate closes.
  */
-const CLOSE_COPY_TIMEOUT = 5000;
-let closePending = false;
-
 async function requestClose(): Promise<boolean> {
   if (!app.dirty) return true;
   if (!F.isTauri || app.settings.autosave === false || !F.closeWasAltF4()) return confirmDiscard();
-  if (closePending) return false;   // a close is already running; the notice has the Cancel
-  closePending = true;
-  return new Promise<boolean>((resolve) => {
-    let done = false;
-    const finish = (close: boolean) => {
-      if (done) return;
-      done = true;
-      closePending = false;
-      clearTimeout(timer);
-      document.removeEventListener("keydown", onKey, true);
-      notice.close();
-      resolve(close);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); } };
-    const notice = showNotice(`Closing "${docName()}" - saving a copy you can recover.`, { label: "Cancel", onClick: () => finish(false) });
-    const timer = setTimeout(() => finish(true), CLOSE_COPY_TIMEOUT);
-    document.addEventListener("keydown", onKey, true);
-    writeRecoveryCopy().then(() => finish(true), (e) => { console.warn("close copy failed", e); finish(true); });
-  });
+  writeRecoveryCopy().catch((e) => console.warn("close copy failed", e));
+  return true;
 }
 
 async function closeWindowRequest() {
