@@ -866,13 +866,17 @@ document.addEventListener("paste", (e) => {
 
 /** Snapshot the selection into the internal clipboard; returns the system-clipboard payload. */
 function prepareCopy(cut: boolean): { text: string; html: string } | null {
-  const rg = rawSel();
-  const bounded = boundRange(sheet(), rg);
+  const brs = selRanges();
+  const multi = brs.length > 1;
+  // Bounding box of the whole selection (one area, or several with Ctrl).
+  const bounded: Range = brs.reduce((a, b) => ({ r1: Math.min(a.r1, b.r1), c1: Math.min(a.c1, b.c1), r2: Math.max(a.r2, b.r2), c2: Math.max(a.c2, b.c2) }), { ...brs[0] });
   if ((bounded.r2 - bounded.r1 + 1) * (bounded.c2 - bounded.c1 + 1) > 2_000_000) { flash("Selection too large to copy"); return null; }
-  const res = copyRange(wb(), sheet(), rg, cut, styles());
+  // Multiple areas: copy the box, blanking cells outside the selection. Cut applies to a single area only.
+  const sel = multi ? (r: number, c: number) => brs.some((rg) => inRange(rg, r, c)) : undefined;
+  const res = copyRange(wb(), sheet(), bounded, cut && !multi, styles(), sel);
   grid().clipRange = { ...bounded };
   grid().schedule();
-  flash(cut ? "Cut - paste to move" : "Copied");
+  flash(multi ? "Copied" : cut ? "Cut - paste to move" : "Copied");
   return res;
 }
 

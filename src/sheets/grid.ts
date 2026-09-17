@@ -73,7 +73,7 @@ export class Grid {
   private colors!: Colors;
   private fontCache = new Map<string, string>();
   private textCache = new WeakMap<Cell, { key: string; text: string; color: string | null; align: string | null }>();
-  private drag: null | { kind: "select" | "col" | "row" | "resizeCol" | "resizeRow" | "fill" | "move" | "moveCol" | "moveRow"; start: { r: number; c: number }; additive?: boolean; index?: number; startPos?: number; startSize?: number; fillTarget?: Range; moveTarget?: Range; moveCopy?: boolean; moveFrom?: [number, number]; headerBefore?: number; moved?: boolean } = null;
+  private drag: null | { kind: "select" | "col" | "row" | "resizeCol" | "resizeRow" | "fill" | "move" | "moveCol" | "moveRow" | "deselect"; start: { r: number; c: number }; additive?: boolean; index?: number; startPos?: number; startSize?: number; fillTarget?: Range; moveTarget?: Range; moveCopy?: boolean; moveFrom?: [number, number]; headerBefore?: number; moved?: boolean; base?: Range[] } = null;
   /** While dragging a header to reorder: the axis and the boundary the block would drop before. */
   private moveIndicator: { axis: "row" | "col"; before: number } | null = null;
   private autoScroll = 0;
@@ -415,6 +415,20 @@ export class Grid {
 
   addRange(rg: Range) { this.selection.ranges.push(this.expandToMerges(rg)); this.schedule(); this.ev.onSelect(); }
 
+  /** Ctrl+click / Ctrl+drag on already-selected cells removes them: subtract the rectangle from the
+      pre-drag selection (splitting ranges as needed). At least one cell always stays selected. */
+  private applyDeselect(base: Range[], start: { r: number; c: number }, cur: { r: number; c: number }) {
+    const rem = normRange(start, cur);
+    let out: Range[] = [];
+    for (const rg of base) out = out.concat(subtractRange(rg, rem));
+    if (!out.length) out = [{ r1: cur.r, c1: cur.c, r2: cur.r, c2: cur.c }];
+    this.selection.ranges = out;
+    const a = this.selection.active;
+    if (!out.some((rg) => inRange(rg, a.r, a.c))) { this.selection.active = { r: out[0].r1, c: out[0].c1 }; this.selection.anchor = { ...this.selection.active }; }
+    this.schedule();
+    this.ev.onSelect();
+  }
+
   private expandToMerges(rg: Range): Range {
     const s = this.sheet();
     let out = { ...rg };
@@ -543,6 +557,14 @@ export class Grid {
         if (ctrl && !shift) {
           const hl = this.hyperlinkAt(hit.r, hit.c);
           if (hl) { this.ev.onLink(hl); return; }
+          if (this.isSelected(hit.r, hit.c)) {
+            // Ctrl on an already-selected cell removes it; drag to remove a rectangle (Google Sheets).
+            const base = this.selection.ranges.map((r) => ({ ...r }));
+            this.drag = { kind: "deselect", start: { r: hit.r, c: hit.c }, base };
+            this.applyDeselect(base, { r: hit.r, c: hit.c }, { r: hit.r, c: hit.c });
+            e.preventDefault();
+            return;
+          }
           this.addRange({ r1: hit.r, c1: hit.c, r2: hit.r, c2: hit.c });
           this.selection.active = { r: hit.r, c: hit.c }; this.selection.anchor = { r: hit.r, c: hit.c };
           this.drag = { kind: "select", start: { r: hit.r, c: hit.c } };
@@ -630,7 +652,8 @@ export class Grid {
       this.selection.ranges[last] = rg;
       this.cursorExt = { r, c };
       this.schedule(); this.ev.onSelect();
-    } else if (d.kind === "col") { if (d.additive) this.addCols(d.start.c, c, true); else this.selectCols(d.start.c, c); }
+    } else if (d.kind === "deselect") { this.applyDeselect(d.base!, d.start, { r, c }); }
+    else if (d.kind === "col") { if (d.additive) this.addCols(d.start.c, c, true); else this.selectCols(d.start.c, c); }
     else if (d.kind === "row") { if (d.additive) this.addRows(d.start.r, r, true); else this.selectRows(d.start.r, r); }
     else if (d.kind === "fill") {
       const src = this.selection.ranges[0];
@@ -1308,3 +1331,16 @@ export class Grid {
 }
 
 function colIndexOf(name: string): number { let n = 0; for (let i = 0; i < name.length; i++) n = n * 26 + (name.charCodeAt(i) - 64); return n - 1; }
+
+/** `rg` with the cells of `rem` removed, as up to four non-overlapping rectangles. */
+function subtractRange(rg: Range, rem: Range): Range[] {
+  if (rem.r2 < rg.r1 || rem.r1 > rg.r2 || rem.c2 < rg.c1 || rem.c1 > rg.c2) return [{ ...rg }];
+  const ir1 = Math.max(rg.r1, rem.r1), ir2 = Math.min(rg.r2, rem.r2);
+  const ic1 = Math.max(rg.c1, rem.c1), ic2 = Math.min(rg.c2, rem.c2);
+  const out: Range[] = [];
+  if (rg.r1 < ir1) out.push({ r1: rg.r1, c1: rg.c1, r2: ir1 - 1, c2: rg.c2 });   // band above
+  if (rg.r2 > ir2) out.push({ r1: ir2 + 1, c1: rg.c1, r2: rg.r2, c2: rg.c2 });   // band below
+  if (rg.c1 < ic1) out.push({ r1: ir1, c1: rg.c1, r2: ir2, c2: ic1 - 1 });        // left of the hole
+  if (rg.c2 > ic2) out.push({ r1: ir1, c1: ic2 + 1, r2: ir2, c2: rg.c2 });        // right of the hole
+  return out;
+}

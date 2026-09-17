@@ -16,8 +16,10 @@ let internalToken = "";
 export function internalClip(): ClipData | null { return internal; }
 
 /** Snapshot the selection into the internal clipboard and the system clipboard. */
-export function copyRange(wb: Workbook, sheet: Sheet, range0: Range, cut: boolean, styles: StyleResolver): { text: string; html: string } {
+export function copyRange(wb: Workbook, sheet: Sheet, range0: Range, cut: boolean, styles: StyleResolver, selected?: (r: number, c: number) => boolean): { text: string; html: string } {
   const range = boundRange(sheet, range0);
+  // Multi-area selections copy the bounding box with cells outside the selection blanked out.
+  const inSel = selected || (() => true);
   const cells: ClipCell[] = [];
   const styleIdx = new Map<number, number>();
   const styleList: ClipData["styles"] = [];
@@ -26,7 +28,7 @@ export function copyRange(wb: Workbook, sheet: Sheet, range0: Range, cut: boolea
   for (let r = range.r1; r <= range.r2; r++) if (!(sheet.hiddenRowsByFilter.size && sheet.hiddenRowsByFilter.has(r))) rows.push(r);
   const rowIdx = new Map(rows.map((r, i) => [r, i]));
   for (const r of rows) for (let c = range.c1; c <= range.c2; c++) {
-    const cell = sheet.cells.get(key(r, c));
+    const cell = inSel(r, c) ? sheet.cells.get(key(r, c)) : undefined;
     if (cell && !styleIdx.has(cell.s)) {
       const xf = wb.styles.xfs[cell.s] || wb.styles.xfs[0];
       styleList.push({ xf, font: wb.styles.fonts[xf.fontId], fill: wb.styles.fills[xf.fillId], border: wb.styles.borders[xf.borderId], numFmt: formatCodeFor(xf.numFmtId, wb.styles.numFmts) });
@@ -44,7 +46,7 @@ export function copyRange(wb: Workbook, sheet: Sheet, range0: Range, cut: boolea
     const fields: string[] = [];
     html += "<tr>";
     for (let c = range.c1; c <= range.c2; c++) {
-      const cell = sheet.cells.get(key(r, c));
+      const cell = inSel(r, c) ? sheet.cells.get(key(r, c)) : undefined;
       const cs = styles.get(cell ? cell.s : 0);
       const text = cell ? styles.render(cell, cs).text : "";
       fields.push(text.replace(/\t/g, " ").replace(/\r?\n/g, " "));

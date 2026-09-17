@@ -106,7 +106,7 @@ export class CellEditor {
   private setText(v: string) { this.el.value = v; this.fbar.value = v; this.lastValue = v; }
   private current(): HTMLTextAreaElement { return this.inFbar ? this.fbar : this.el; }
 
-  isFormula(): boolean { return this.active && this.text.startsWith("="); }
+  isFormula(): boolean { return this.active && (this.text.startsWith("=") || this.text.startsWith("+")); }
 
   /** Start editing the active cell. `seed` replaces the content (typing starts an edit); null keeps it. */
   begin(seed: string | null, fromFbar = false, initialText?: string) {
@@ -169,7 +169,12 @@ export class CellEditor {
   /** Commit (move = where to go afterwards) or cancel. */
   finish(move: { dr: number; dc: number } | null, commit: boolean) {
     if (!this.active) return;
-    const text = commit ? closeOpenParens(this.text) : this.text;
+    let text = this.text;
+    if (commit) {
+      // A leading "+" starts a formula (Excel/Lotus habit): "+A1" commits as "=A1".
+      if (text.startsWith("+")) text = "=" + text.slice(1);
+      text = closeOpenParens(text);
+    }
     this.active = false;
     this.pointing = null;
     this.closePopup();
@@ -254,9 +259,9 @@ export class CellEditor {
     if (this.pointing) return true;
     const ta = this.current();
     const before = ta.value.slice(0, ta.selectionStart);
-    // The start of the formula, or right after a separator or "(" (a fresh argument): a new
-    // reference is expected there, so arrows point. Anywhere else they move the caret.
-    return /^=\s*$/.test(before) || /[,;(]\s*$/.test(before);
+    // Right after an operator, separator or "(" (including the leading "="/"+"): a new reference is
+    // expected there, so arrows point at cells. After a reference or value they move the caret.
+    return /[-+*/^&<>=,;(]\s*$/.test(before);
   }
 
   /** Can a reference be inserted at the caret (after an operator, "(", "," or at a ref we are already pointing at)? */
