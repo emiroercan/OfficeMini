@@ -116,7 +116,10 @@ export function refreshNativeMenu(): void {
 export function installNativeMenu(provider: () => MenuSpec[], onQuit: () => void): void {
   if (!nativeMenuActive) return;
   getMenus = provider;
-  document.documentElement.classList.add("native-menu");   // CSS hides the in-window menu titles
+  document.documentElement.classList.add("native-menu");   // CSS drops the in-window menu row
+  // No titlebar strip on macOS: the toolbar is the top row and doubles as the drag region (empty
+  // areas move the window; the buttons, being children without the attribute, still click).
+  document.getElementById("toolbar")?.setAttribute("data-tauri-drag-region", "");
   void F.onBackendEvent<string>("menu-action", (id) => {
     if (id === "quit") { onQuit(); return; }
     actions.get(id)?.();
