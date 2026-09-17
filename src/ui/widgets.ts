@@ -136,6 +136,9 @@ export interface MenuItem {
   sep?: boolean;
   submenu?: MenuItem[];
   icon?: string;
+  /** macOS only: render this item as a native predefined item (the in-window menu ignores it).
+      WebKit's clipboard needs the standard Edit items, so Cut/Copy/Paste/Select all are tagged. */
+  nativeRole?: "cut" | "copy" | "paste" | "selectAll";
 }
 
 export function showMenu(anchor: HTMLElement | { x: number; y: number }, items: MenuItem[], opts: PopupOptions = {}): PopupHandle {

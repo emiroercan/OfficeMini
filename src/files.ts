@@ -292,6 +292,12 @@ export async function setWindowTitle(title: string) {
   if (w) await w.setTitle(title);
 }
 
+/** macOS native menu bar: hand the serialized menu model to Rust to render (see native-menu.ts). */
+export async function setAppMenu(menus: unknown): Promise<void> {
+  if (!isTauri) return;
+  try { const inv = await invoke(); await inv("set_app_menu", { menus }); } catch { /* menu is a convenience; ignore */ }
+}
+
 export async function showWindow() {
   const w = await appWindow();
   if (w) { await w.show(); await w.setFocus(); }

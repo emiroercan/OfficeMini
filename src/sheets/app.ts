@@ -23,6 +23,7 @@ import { setDarkMode } from "../docx/props";
 import { el, showMenu, MenuItem, tooltip, closeAllPopups, icon, showPopup } from "../ui/widgets";
 import { showDialog, promptDialog, closeDialog, dialogOpen } from "../ui/dialog-core";
 import { checkForUpdates } from "../updater";
+import { installNativeMenu, refreshNativeMenu, MenuSpec } from "../native-menu";
 import * as F from "../files";
 
 type Kind = "xlsx" | "csv" | "new";
@@ -61,6 +62,8 @@ const styles = () => app.styles!;
 
 // DOM pieces created in buildWorkspace()
 let namebox: HTMLInputElement, finput: HTMLTextAreaElement, gridHost: HTMLElement, celled: HTMLTextAreaElement, tabsEl: HTMLElement;
+/** The menu-bar definitions, captured so the macOS native menu bar can mirror them (native-menu.ts). */
+let menuSpec: MenuSpec[] = [];
 /**
  * Invisible textarea that holds keyboard focus while the grid is "focused". Copy / cut / paste
  * then arrive as native clipboard events in every webview (Chromium, WebKitGTK, WebKit) without
@@ -1916,9 +1919,9 @@ function buildMenubar() {
       { label: "Undo" + (app.history.undoLabel() ? " " + app.history.undoLabel() : ""), key: `${MOD}+Z`, action: () => undo(), disabled: !app.history.canUndo() },
       { label: "Redo" + (app.history.redoLabel() ? " " + app.history.redoLabel() : ""), key: `${MOD}+Y`, action: () => redo(), disabled: !app.history.canRedo() },
       { sep: true },
-      { label: "Cut", key: `${MOD}+X`, action: () => copySelection(true) },
-      { label: "Copy", key: `${MOD}+C`, action: () => copySelection(false) },
-      { label: "Paste", key: `${MOD}+V`, action: () => pasteFromSystem() },
+      { label: "Cut", key: `${MOD}+X`, action: () => copySelection(true), nativeRole: "cut" },
+      { label: "Copy", key: `${MOD}+C`, action: () => copySelection(false), nativeRole: "copy" },
+      { label: "Paste", key: `${MOD}+V`, action: () => pasteFromSystem(), nativeRole: "paste" },
       { label: "Paste special", submenu: pasteSpecialMenu() },
       { sep: true },
       { label: "Fill down", key: `${MOD}+D`, action: () => fillDirection("down") },
@@ -2032,6 +2035,7 @@ function buildMenubar() {
       { label: "About OfficeMini", action: () => aboutDialog() },
     ] },
   ];
+  menuSpec = menus;   // macOS native menu bar mirrors these (native-menu.ts)
   let openIdx = -1;
   const titles: HTMLElement[] = [];
   const openMenu = (i: number) => {
@@ -2219,7 +2223,7 @@ function buildToolbar() {
     },
   };
 }
-function updateToolbarState() { app.toolbar?.update(); }
+function updateToolbarState() { app.toolbar?.update(); refreshNativeMenu(); }
 
 // ---------------------------------------------------------------------------
 // Status bar
@@ -2491,6 +2495,7 @@ async function boot() {
   app.status = buildStatusbar();
   app.findbar = buildFindbar();
   buildMenubar();
+  installNativeMenu(() => menuSpec, closeWindowRequest);   // macOS: mirror menus to the system bar
   installGlobalKeys();
   updateToolbarState();
   updateStatus();
@@ -2498,7 +2503,7 @@ async function boot() {
 
   const openPaths = (paths: string[]) => { for (const p of paths) { if (untouched()) openPath(p); else F.openInNewWindow(p); } };
   await F.onBackendEvent("open-files", async () => openPaths(await F.takePendingOpens()));
-  await F.onBackendEvent<string>("menu", (id) => { if (id === "quit") closeWindowRequest(); else if (id === "undo") undo(); else if (id === "redo") redo(); });
+  // Native macOS menu clicks arrive as "menu-action" and are handled in native-menu.ts.
 
   const params = new URLSearchParams(location.search);
   let file = params.get("file");

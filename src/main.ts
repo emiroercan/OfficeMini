@@ -22,6 +22,7 @@ import { showContextMenu, tableMenu, pasteFromClipboard, ContextActions } from "
 import { buildToolbar, ToolbarHandle, colorPopup } from "./ui/toolbar";
 import { buildStatusbar, StatusHandle } from "./ui/statusbar";
 import { el, showMenu, MenuItem, tooltip, closeAllPopups, icon } from "./ui/widgets";
+import { installNativeMenu, refreshNativeMenu, MenuSpec } from "./native-menu";
 import { showDialog, linkDialog, tableDialog, pageSetupDialog, paragraphDialog, goToPageDialog, shortcutsDialog, aboutDialog, closeDialog } from "./ui/dialogs";
 import { imageSize } from "./docx/images";
 import { twipsToPx } from "./docx/units";
@@ -67,6 +68,9 @@ const run = (cmd: (s: EditorState, d?: any, v?: EditorView) => boolean, focus = 
 function docName(): string {
   return app.path ? F.basename(app.path) : "Untitled";
 }
+/** The menu-bar definitions, captured so the macOS native menu bar can mirror them (native-menu.ts). */
+let menuSpec: MenuSpec[] = [];
+
 function updateTitle() {
   F.setWindowTitle(`${docName()}${app.dirty ? " •" : ""} – OfficeMini`);
 }
@@ -1036,9 +1040,9 @@ function buildMenubar() {
       { label: "Undo", key: key("undo"), action: () => run(undo) },
       { label: "Redo", key: key("redo"), action: () => run(redo) },
       { sep: true },
-      { label: "Cut", key: "Ctrl+X", action: () => { view().focus(); document.execCommand("cut"); } },
-      { label: "Copy", key: "Ctrl+C", action: () => { view().focus(); document.execCommand("copy"); } },
-      { label: "Paste", key: "Ctrl+V", action: () => pasteFromClipboard(view(), false, actions.insertImageFromBytes) },
+      { label: "Cut", key: "Ctrl+X", action: () => { view().focus(); document.execCommand("cut"); }, nativeRole: "cut" },
+      { label: "Copy", key: "Ctrl+C", action: () => { view().focus(); document.execCommand("copy"); }, nativeRole: "copy" },
+      { label: "Paste", key: "Ctrl+V", action: () => pasteFromClipboard(view(), false, actions.insertImageFromBytes), nativeRole: "paste" },
       { label: "Paste without formatting", key: key("pasteplain"), action: () => pasteFromClipboard(view(), true) },
       { sep: true },
       { label: "Select all", key: key("selectall"), action: () => run(selectAll) },
@@ -1144,6 +1148,7 @@ function buildMenubar() {
       { label: "About OfficeMini", action: () => aboutDialog() },
     ] },
   ];
+  menuSpec = menus;   // macOS native menu bar mirrors these (native-menu.ts)
   let openIdx = -1;
   const titles: HTMLElement[] = [];
   const openMenu = (i: number) => {
@@ -1321,6 +1326,7 @@ async function boot() {
       if (v.state.doc !== lastDoc) { lastDoc = v.state.doc; if (!app.loading) { setDirty(true); hideWelcome(); } }
       app.toolbar?.update(v.state);
       updateStatus();
+      refreshNativeMenu();
       if (findVisible) findbar.refresh();
     },
     onPages: (n) => { app.pages = n; updateStatus(); if (!app.shown) revealWindow(); },
@@ -1335,6 +1341,7 @@ async function boot() {
   app.status = buildStatusbar($("statusbar"), { onZoom: setZoom, onViewMode: setMode, onGoToPage: () => goToPage(), onSource: () => toggleSourceView(), onTheme: () => toggleTheme() });
   findbar = buildFindbar();
   buildMenubar();
+  installNativeMenu(() => menuSpec, closeWindowRequest);   // macOS: mirror menus to the system bar
   installGlobalKeys();
   app.toolbar.update(handle.view.state);
   updateStatus();
@@ -1347,11 +1354,7 @@ async function boot() {
     }
   };
   await F.onBackendEvent("open-files", async () => openPaths(await F.takePendingOpens()));
-  await F.onBackendEvent<string>("menu", (id) => {
-    if (id === "quit") closeWindowRequest();
-    else if (id === "undo") run(undo);
-    else if (id === "redo") run(redo);
-  });
+  // Native macOS menu clicks arrive as "menu-action" and are handled in native-menu.ts.
 
   // Which file to open: ?file= (new windows) or CLI args (first window).
   const params = new URLSearchParams(location.search);

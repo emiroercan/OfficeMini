@@ -4,6 +4,10 @@ use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_decorum::WebviewWindowExt;
 
+// macOS-only: the native menu-bar builder. See src/native-menu.ts for the frontend half.
+#[cfg(target_os = "macos")]
+mod macos_menu;
+
 static WINDOW_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
 /// Files the OS asked us to open outside argv (macOS Finder / "Open with" deliver an Apple
@@ -387,6 +391,21 @@ fn url_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// macOS: (re)build the native menu bar from the frontend's menu model. A no-op elsewhere, so the
+/// in-window menu bar keeps working on Windows and Linux.
+#[tauri::command]
+fn set_app_menu(app: AppHandle, menus: serde_json::Value) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_menu::set_app_menu(&app, &menus).map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (&app, &menus);
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -410,7 +429,8 @@ pub fn run() {
             delete_file,
             file_mtime,
             css_px_per_inch,
-            take_pending_opens
+            take_pending_opens,
+            set_app_menu
         ])
         .setup(|app| {
             // The first window is created from tauri.conf.json (hidden); the frontend
@@ -425,13 +445,14 @@ pub fn run() {
         })
         .on_menu_event(|app, event| {
             use tauri::Emitter;
+            // Native menu clicks route to the frontend as "menu-action" (see src/native-menu.ts).
+            // Quit goes to every window so each prompts for unsaved changes; everything else goes to
+            // the focused window, which runs the action for that document.
             let id = event.id().as_ref().to_string();
-            match id.as_str() {
-                "quit" => { let _ = app.emit("menu", id); }   // every window prompts for unsaved changes
-                "undo" | "redo" => {
-                    if let Some(label) = target_window(app) { let _ = app.emit_to(label.as_str(), "menu", id); }
-                }
-                _ => {}
+            if id == "quit" {
+                let _ = app.emit("menu-action", id);
+            } else if let Some(label) = target_window(app) {
+                let _ = app.emit_to(label.as_str(), "menu-action", id);
             }
         })
         .build(tauri::generate_context!())

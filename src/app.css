@@ -87,6 +87,9 @@ body {
    window buttons decorum injects at the right. Empty areas drag the window (data-tauri-drag-region). */
 #menubar { display: flex; align-items: center; height: 34px; background: var(--ui-bg); padding: 0 4px; flex: none; }
 .menu-title { padding: 3px 10px; border-radius: 6px; cursor: default; flex: none; }
+/* macOS: menus live in the native system menu bar, so hide the in-window titles. The menu row
+   stays as the draggable titlebar strip (traffic lights on the left, filename centred). */
+html.native-menu .menu-title { display: none; }
 /* Filename in the titlebar (no OS titlebar). Centred, click-through so drag/menus still work. */
 #doctitle { position: fixed; top: 0; left: 0; right: 0; height: 34px; display: flex; align-items: center; justify-content: center; pointer-events: none; color: var(--ui-muted); font-size: 12.5px; z-index: 1; padding: 0 190px; white-space: nowrap; overflow: hidden; }
 #doctitle:empty { display: none; }
