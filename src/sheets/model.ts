@@ -224,6 +224,83 @@ export function colHidden(sheet: Sheet, c: number): boolean {
   for (const ci of sheet.cols) if (c >= ci.min && c <= ci.max && ci.hidden) return true;
   return false;
 }
+// ---- visibility ------------------------------------------------------------------
+// A hidden row or column - filtered out, or hidden by hand - is out of reach: nothing that acts
+// on a selection (typing, pasting, filling, formatting, clearing, find and replace, deleting)
+// may touch it, and the cursor never lands on it. Only the row numbers and column letters show
+// that something is there. Everything that walks a range goes through these helpers.
+
+/** Is the row hidden, by the filter or by hand? */
+export function rowHidden(sheet: Sheet, r: number): boolean {
+  return (sheet.hiddenRowsByFilter.size > 0 && sheet.hiddenRowsByFilter.has(r)) || !!sheet.rows.get(r)?.hidden;
+}
+/** Does the sheet hide any row at all? Lets a per-cell loop skip the row test. */
+export function hidesRows(sheet: Sheet): boolean {
+  if (sheet.hiddenRowsByFilter.size) return true;
+  for (const info of sheet.rows.values()) if (info.hidden) return true;
+  return false;
+}
+/** Test for hidden columns, built once per operation (colHidden() scans the column list on every call). */
+export function colHiddenTest(sheet: Sheet): (c: number) => boolean {
+  const spans = sheet.cols.filter((ci) => ci.hidden).map((ci) => [ci.min, ci.max] as const);
+  if (!spans.length) return () => false;
+  return (c) => { for (const [a, b] of spans) if (c >= a && c <= b) return true; return false; };
+}
+/** The rows of r1..r2 that can be seen, in order. */
+export function visibleRows(sheet: Sheet, r1: number, r2: number): number[] {
+  const out: number[] = [];
+  if (!hidesRows(sheet)) { for (let r = r1; r <= r2; r++) out.push(r); return out; }
+  for (let r = r1; r <= r2; r++) if (!rowHidden(sheet, r)) out.push(r);
+  return out;
+}
+/** The columns of c1..c2 that can be seen, in order. */
+export function visibleCols(sheet: Sheet, c1: number, c2: number): number[] {
+  const hid = colHiddenTest(sheet);
+  const out: number[] = [];
+  for (let c = c1; c <= c2; c++) if (!hid(c)) out.push(c);
+  return out;
+}
+/** `count` visible rows starting at `from`, running past the used area if need be. */
+export function visibleRowsFrom(sheet: Sheet, from: number, count: number): number[] {
+  const out: number[] = [];
+  const any = hidesRows(sheet);
+  for (let r = from; out.length < count && r < MAXR; r++) if (!any || !rowHidden(sheet, r)) out.push(r);
+  return out;
+}
+/** `count` visible columns starting at `from`. */
+export function visibleColsFrom(sheet: Sheet, from: number, count: number): number[] {
+  const hid = colHiddenTest(sheet);
+  const out: number[] = [];
+  for (let c = from; out.length < count && c < MAXC; c++) if (!hid(c)) out.push(c);
+  return out;
+}
+/** Consecutive runs of a sorted index list: [3,4,5,9,10] -> [[3,5],[9,10]]. */
+export function runsOf(list: number[]): [number, number][] {
+  const out: [number, number][] = [];
+  for (const v of list) { const last = out[out.length - 1]; if (last && last[1] === v - 1) last[1] = v; else out.push([v, v]); }
+  return out;
+}
+/**
+ * The visible part of a range, as rectangles: the range itself when nothing in it is hidden,
+ * otherwise one rectangle per run of visible rows and run of visible columns.
+ */
+export function visibleParts(sheet: Sheet, rg: Range): Range[] {
+  const anyRows = hidesRows(sheet);
+  const hid = colHiddenTest(sheet);
+  let anyCols = false;
+  for (const ci of sheet.cols) if (ci.hidden && ci.max >= rg.c1 && ci.min <= rg.c2) { anyCols = true; break; }
+  if (!anyRows && !anyCols) return [rg];
+  const rowRuns: [number, number][] = [];
+  if (!anyRows) rowRuns.push([rg.r1, rg.r2]);
+  else for (let r = rg.r1; r <= rg.r2; r++) { if (rowHidden(sheet, r)) continue; const last = rowRuns[rowRuns.length - 1]; if (last && last[1] === r - 1) last[1] = r; else rowRuns.push([r, r]); }
+  const colRuns: [number, number][] = [];
+  if (!anyCols) colRuns.push([rg.c1, rg.c2]);
+  else for (let c = rg.c1; c <= rg.c2; c++) { if (hid(c)) continue; const last = colRuns[colRuns.length - 1]; if (last && last[1] === c - 1) last[1] = c; else colRuns.push([c, c]); }
+  const out: Range[] = [];
+  for (const [r1, r2] of rowRuns) for (const [c1, c2] of colRuns) out.push({ r1, c1, r2, c2 });
+  return out;
+}
+
 /** Convert Excel character-width units to pixels (Calibri 11: max digit width 7 px). */
 export function charsToPx(w: number, mdw = 7): number { return Math.round(((w * mdw + 5) / mdw) * mdw); }
 export function pxToChars(px: number, mdw = 7): number { return Math.round(((px - 5) / mdw) * 100) / 100; }

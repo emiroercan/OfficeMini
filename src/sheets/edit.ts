@@ -4,13 +4,15 @@
 import {
   Workbook, Sheet, Cell, Range, Font, Fill, Border, BorderSide, Xf, Styles, ColInfo, RowInfo, Value,
   key, rowOf, colOf, updateExtent, recomputeExtent, MAXR, MAXC, inRange, cellRef, parseRef, DEFAULT_FONT, Hyperlink,
+  rowHidden, hidesRows, colHiddenTest, visibleRows, visibleCols, visibleParts, runsOf,
 } from "./model";
 import { adjustFormulaForInsertDelete, shiftFormula, renameSheetInFormula, remapRefs } from "./formula/tokens";
 import { parseInput, isDateFormat, locale, serialToDate, dateToSerial } from "./numfmt";
 import { formatCodeFor } from "./numfmt";
 
 export interface SelSnapshot { sheet: number; ranges: Range[]; active: { r: number; c: number }; }
-export interface Entry { label: string; undo(): void; redo(): void; before?: SelSnapshot; after?: SelSnapshot; }
+/** `refilter`: rows moved under the filter, so its hidden rows are recomputed after undo / redo as well. */
+export interface Entry { label: string; undo(): void; redo(): void; before?: SelSnapshot; after?: SelSnapshot; refilter?: boolean; }
 
 export class History {
   private entries: Entry[] = [];
@@ -157,9 +159,8 @@ export function styleEntry(wb: Workbook, sheet: Sheet, ranges: Range[], patch: S
   for (const rg0 of ranges) {
     const wholeCols = rg0.r1 === 0 && rg0.r2 >= MAXR - 1;
     const wholeRows = rg0.c1 === 0 && rg0.c2 >= MAXC - 1;
-    const rg = boundRange(sheet, rg0);
-    // existing cells inside the (bounded) range
-    for (let r = rg.r1; r <= rg.r2; r++) for (let c = rg.c1; c <= rg.c2; c++) {
+    // existing cells inside the (bounded) range; hidden rows and columns keep their format
+    for (const rg of visibleParts(sheet, boundRange(sheet, rg0))) for (let r = rg.r1; r <= rg.r2; r++) for (let c = rg.c1; c <= rg.c2; c++) {
       const k = key(r, c);
       if (seen.has(k)) continue; seen.add(k);
       const cell = sheet.cells.get(k);
@@ -168,10 +169,12 @@ export function styleEntry(wb: Workbook, sheet: Sheet, ranges: Range[], patch: S
     }
     if (wholeCols) {
       if (!colStyles.length) colStyles.push({ c: rg0.c1, before: sheet.cols.map((x) => ({ ...x })) });
-      setColStyleRange(sheet, rg0.c1, Math.min(rg0.c2, MAXC - 1), map);
+      for (const [a, b] of runsOf(visibleCols(sheet, rg0.c1, Math.min(rg0.c2, MAXC - 1)))) setColStyleRange(sheet, a, b, map);
     }
     // row styles only matter for cells typed later: stop a little past the used area (Ctrl+Shift+Down selects a million rows)
+    const anyHiddenRows = wholeRows && !wholeCols && hidesRows(sheet);
     if (wholeRows && !wholeCols) for (let r = rg0.r1; r <= Math.min(rg0.r2, MAXR - 1, Math.max(sheet.maxRow, 0) + 500); r++) {
+      if (anyHiddenRows && rowHidden(sheet, r)) continue;
       const before = sheet.rows.get(r);
       rowStyles.push({ r, before: before ? { ...before } : undefined });
       sheet.rows.set(r, { ...(before || {}), style: map(before?.style || 0) });
@@ -442,34 +445,32 @@ export function fillChanges(wb: Workbook, sheet: Sheet, src: Range, dst: Range):
   const horizontal = dst.c2 - dst.c1 > src.c2 - src.c1 || dst.c1 !== src.c1;
   const axis: "row" | "col" = vertical && !horizontal ? "row" : horizontal && !vertical ? "col" : (dst.r2 - dst.r1) >= (dst.c2 - dst.c1) ? "row" : "col";
   const down = axis === "row" ? dst.r2 > src.r2 : dst.c2 > src.c2;
-  const lanes = axis === "row" ? src.c2 - src.c1 + 1 : src.r2 - src.r1 + 1;
-  const srcLen = axis === "row" ? src.r2 - src.r1 + 1 : src.c2 - src.c1 + 1;
-  for (let lane = 0; lane < lanes; lane++) {
-    const srcCells: (Cell | undefined)[] = [];
-    for (let i = 0; i < srcLen; i++) {
-      const r = axis === "row" ? src.r1 + i : src.r1 + lane, c = axis === "row" ? src.c1 + lane : src.c1 + i;
-      srcCells.push(sheet.cells.get(key(r, c)));
-    }
+  // Hidden rows and columns take no part: they are neither read as the pattern nor written to,
+  // and a series counts only the cells that can be seen (1, 2, 3 down a filtered list).
+  const along = (a: number, b: number) => (axis === "row" ? visibleRows(sheet, a, b) : visibleCols(sheet, a, b));
+  const across = axis === "row" ? visibleCols(sheet, src.c1, src.c2) : visibleRows(sheet, src.r1, src.r2);
+  const srcPos = axis === "row" ? along(src.r1, src.r2) : along(src.c1, src.c2);
+  const srcLen = srcPos.length;
+  if (!srcLen) return changes;
+  const srcStart = axis === "row" ? src.r1 : src.c1, srcEnd = axis === "row" ? src.r2 : src.c2;
+  const dstPos = down ? along(srcEnd + 1, axis === "row" ? dst.r2 : dst.c2) : along(axis === "row" ? dst.r1 : dst.c1, srcStart - 1).reverse();
+  for (const lane of across) {
+    const at = (p: number) => (axis === "row" ? { r: p, c: lane } : { r: lane, c: p });
+    const srcCells: (Cell | undefined)[] = srcPos.map((p) => { const q = at(p); return sheet.cells.get(key(q.r, q.c)); });
     const series = detectSeries(wb, srcCells);
-    const targets: { r: number; c: number; idx: number }[] = [];
-    if (down) {
-      const start = axis === "row" ? src.r2 + 1 : src.c2 + 1, end = axis === "row" ? dst.r2 : dst.c2;
-      for (let p = start, i = 0; p <= end; p++, i++) targets.push({ r: axis === "row" ? p : src.r1 + lane, c: axis === "row" ? src.c1 + lane : p, idx: srcLen + i });
-    } else {
-      const start = axis === "row" ? src.r1 - 1 : src.c1 - 1, end = axis === "row" ? dst.r1 : dst.c1;
-      for (let p = start, i = -1; p >= end; p--, i--) targets.push({ r: axis === "row" ? p : src.r1 + lane, c: axis === "row" ? src.c1 + lane : p, idx: i });
-    }
-    for (const t of targets) {
-      const si = ((t.idx % srcLen) + srcLen) % srcLen;
+    dstPos.forEach((p, i) => {
+      const idx = down ? srcLen + i : -1 - i;
+      const t = at(p);
+      const si = ((idx % srcLen) + srcLen) % srcLen;
       const proto = srcCells[si];
-      const cell = series.next(t.idx, si, proto);
+      const cell = series.next(idx, si, proto);
       if (cell && proto?.f) {
-        const sr = axis === "row" ? src.r1 + si : src.r1 + lane, sc = axis === "row" ? src.c1 + lane : src.c1 + si;
-        cell.f = shiftFormula(proto.f, t.r - sr, t.c - sc);
+        const from = at(srcPos[si]);
+        cell.f = shiftFormula(proto.f, t.r - from.r, t.c - from.c);
         cell.v = null;
       }
       changes.push({ r: t.r, c: t.c, cell });
-    }
+    });
   }
   return changes;
 }
@@ -538,7 +539,10 @@ export function movedCell(cell: Cell, dr: number, dc = 0): Cell {
 export function sortChanges(sheet: Sheet, range: Range, col: number, ascending: boolean, hasHeader: boolean): CellChange[] {
   const r1 = range.r1 + (hasHeader ? 1 : 0);
   const rows: { r: number; cells: Map<number, Cell | undefined> }[] = [];
-  for (let r = r1; r <= range.r2; r++) {
+  // Rows that are filtered out or hidden keep their place; the visible rows are sorted among
+  // the places the visible rows hold. A row always moves whole, hidden columns included.
+  const slots = visibleRows(sheet, r1, range.r2);
+  for (const r of slots) {
     const m = new Map<number, Cell | undefined>();
     for (let c = range.c1; c <= range.c2; c++) m.set(c, sheet.cells.get(key(r, c)));
     rows.push({ r, cells: m });
@@ -558,7 +562,7 @@ export function sortChanges(sheet: Sheet, range: Range, col: number, ascending: 
   });
   const changes: CellChange[] = [];
   sorted.forEach((row, i) => {
-    const target = r1 + i;
+    const target = slots[i];
     if (row.r === target) return;
     for (let c = range.c1; c <= range.c2; c++) { const src = row.cells.get(c); changes.push({ r: target, c, cell: src ? movedCell(src, target - row.r) : null }); }
   });
@@ -571,9 +575,8 @@ export function clearChanges(sheet: Sheet, ranges: Range[], what: "contents" | "
   const changes: CellChange[] = [];
   const seen = new Set<number>();
   for (const rg0 of ranges) {
-    const rg = boundRange(sheet, rg0);
-    for (let r = rg.r1; r <= rg.r2; r++) for (let c = rg.c1; c <= rg.c2; c++) {
-      if (sheet.hiddenRowsByFilter.size && sheet.hiddenRowsByFilter.has(r)) continue;
+    // hidden rows and columns are left alone
+    for (const rg of visibleParts(sheet, boundRange(sheet, rg0))) for (let r = rg.r1; r <= rg.r2; r++) for (let c = rg.c1; c <= rg.c2; c++) {
       const k = key(r, c);
       if (seen.has(k)) continue; seen.add(k);
       const cell = sheet.cells.get(k);

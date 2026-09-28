@@ -5,6 +5,7 @@ import { Grid, GridEvents, Hit } from "./grid";
 import {
   Workbook, Sheet, Range, Cell, key, rowOf, colOf, cellRef, rangeRef, rangeRefShort, parseRef, colName, MAXR, MAXC, newSheet, setColWidth, setRowHeight, pxToChars,
   charsToPx, colWidthChars, colHidden, rowHeightPx, mergeAt, inRange, normRange, quoteSheet, isError, Hyperlink, Value,
+  rowHidden, hidesRows, colHiddenTest, visibleRows, visibleCols, visibleParts, visibleRowsFrom, visibleColsFrom, runsOf,
 } from "./model";
 import { loadXlsx } from "./xlsx-read";
 import { writeXlsx } from "./xlsx-write";
@@ -12,7 +13,7 @@ import { csvToWorkbook, blankWorkbook, sheetToCsv, encodeCsv } from "./csv";
 import { StyleResolver } from "./render-style";
 import { Engine } from "./formula/engine";
 import { History, Entry, CellChange, cellsEntry, styleEntry, StylePatch, ValueConverter, inputCell, structuralEntry, insertDelete, moveColsRows, renameSheet, fillChanges, sortChanges, clearChanges, boundRange, xfWith, SelSnapshot, movedCell } from "./edit";
-import { copyRange, pasteInternal, pasteExternal, parseExternal, isOurHtml, internalClip, clearInternalClip, cancelCut, PasteMode } from "./clipboard";
+import { copyRange, pasteInternal, pasteExternal, parseExternal, parseFormulas, isOurHtml, isSheetHtml, internalClip, clearInternalClip, cancelCut, PasteMode } from "./clipboard";
 import { setLocale, locale, detectLocale, LOCALES, presets, formatValue, editText, parseInput, todaySerial, nowSerial, isDateFormat } from "./numfmt";
 import { CellEditor } from "./celledit";
 import { dataBlock, looksLikeHeader, applyFilters, filterState, clearFilterState, showFilterPopup, displayOf, columnFiltered, FormulaRowTest } from "./filter";
@@ -642,8 +643,11 @@ const editorHost = {
     if (!same) applyChanges([{ r: pos.r, c: pos.c, cell }], "Edit " + cellRef(pos.r, pos.c));
     focusGrid();
     if (move) {
-      if (move.dr === 1 && move.dc === 0 && app.tabStartCol !== null) { grid().setActive(pos.r + 1, app.tabStartCol); app.tabStartCol = null; }
-      else { if (move.dc) { if (app.tabStartCol === null) app.tabStartCol = pos.c; } else app.tabStartCol = null; grid().setActive(pos.r + move.dr, pos.c + move.dc); }
+      // Enter / Tab / arrows leave the cell the same way the arrow keys do: over hidden and
+      // filtered-out rows and columns, on to the next cell that can be seen.
+      const g = grid();
+      if (move.dr === 1 && move.dc === 0 && app.tabStartCol !== null) { g.setActive(pos.r, app.tabStartCol); app.tabStartCol = null; g.moveActive(1, 0, false, false); }
+      else { if (move.dc) { if (app.tabStartCol === null) app.tabStartCol = pos.c; } else app.tabStartCol = null; g.setActive(pos.r, pos.c); g.moveActive(move.dr, move.dc, false, false); }
     } // no move (blur / click elsewhere): the grid already holds the selection the user chose
     updateFbar();
     app.status?.update();
@@ -670,6 +674,9 @@ function applyChanges(changes: CellChange[], label: string) {
   afterModel();
 }
 
+/** Cells of a range that can be seen: the selection as every command should treat it. */
+function visibleSel(): Range[] { const s = sheet(); return selRanges().flatMap((rg) => visibleParts(s, rg)); }
+
 function afterModel() {
   app.engine!.recalcAll();
   grid().invalidate();
@@ -683,6 +690,7 @@ function afterModel() {
 function structural(label: string, mutate: () => void, othersToo = false) {
   const before = selSnapshot();
   const e = structuralEntry(wb(), grid().sheetIdx(), label, mutate, othersToo);
+  e.refilter = true;   // undo / redo move the rows back, so they re-filter too
   pushEntry(e, before);
   styles().invalidate();
   // Inserting, deleting or sorting rows moves them under the filter, and the hidden set is a
@@ -698,6 +706,7 @@ function undo() {
   if (!e) { flash("Nothing to undo"); return; }
   styles().invalidate();
   if (e.before) restoreSel(e.before);
+  if (e.refilter) reapplyFilter();
   afterModel();
   flash("Undo: " + e.label);
 }
@@ -707,6 +716,7 @@ function redo() {
   if (!e) { flash("Nothing to redo"); return; }
   styles().invalidate();
   if (e.after) restoreSel(e.after);
+  if (e.refilter) reapplyFilter();
   afterModel();
   flash("Redo: " + e.label);
 }
@@ -793,11 +803,16 @@ function applyBorders(kind: "all" | "outer" | "inner" | "top" | "bottom" | "left
   const changes: CellChange[] = [];
   const side = (style: string) => ({ style, color: { rgb: "FF" + color } });
   for (const rg of selRanges()) {
-    for (let r = rg.r1; r <= rg.r2; r++) for (let c = rg.c1; c <= rg.c2; c++) {
+    // The box is drawn around what can be seen: its edges are the first and last visible row
+    // and column, and hidden cells inside it are not touched.
+    const rows = visibleRows(sheet(), rg.r1, rg.r2), cols = visibleCols(sheet(), rg.c1, rg.c2);
+    if (!rows.length || !cols.length) continue;
+    const rTop = rows[0], rBottom = rows[rows.length - 1], cLeft = cols[0], cRight = cols[cols.length - 1];
+    for (const r of rows) for (const c of cols) {
       const cell = sheet().cells.get(key(r, c));
       const p: StylePatch = { border: {} };
       const b = p.border!;
-      const top = r === rg.r1, bottom = r === rg.r2, left = c === rg.c1, right = c === rg.c2;
+      const top = r === rTop, bottom = r === rBottom, left = c === cLeft, right = c === cRight;
       const thin = side("thin"), medium = side("medium");
       switch (kind) {
         case "all": b.top = thin; b.bottom = thin; b.left = thin; b.right = thin; break;
@@ -938,7 +953,15 @@ function doPaste(html: string | null, text: string, mode: PasteMode) {
   const target = rawSel();
   const bounded: Range = { r1: target.r1, c1: target.c1, r2: isWholeCols(target) ? target.r1 : target.r2, c2: isWholeRows(target) ? target.c1 : target.c2 };
   const clip = internalClip();
-  if (clip && (isOurHtml(html) || (!html && !text) || (!html && clip.text !== undefined && text.replace(/\r\n/g, "\n").replace(/\n$/, "") === clip.text))) {
+  // Is the clipboard still holding what this window copied? Then paste the cells themselves -
+  // formulas (references moved along), formats and all. Three signs, in order of trust: our
+  // marker in the HTML; nothing on the clipboard at all; or the very text we put there. The
+  // text test matters because the marker does not always come back (a webview may rewrite the
+  // HTML, or hand over the text alone), and without it a formula would paste as its value.
+  // HTML marked by *another* OfficeMini window is never ours, whatever its text says.
+  const sameText = !!clip && clip.text !== undefined && text.replace(/\r\n?/g, "\n").replace(/\n$/, "") === clip.text.replace(/\n$/, "");
+  const ours = !!clip && (isOurHtml(html) || (!html && !text) || (sameText && !(isSheetHtml(html) && !isOurHtml(html))));
+  if (clip && ours) {
     const res = pasteInternal(wb(), sheet(), bounded, mode);
     const before = selSnapshot();
     const entries: Entry[] = [];
@@ -968,7 +991,9 @@ function doPaste(html: string | null, text: string, mode: PasteMode) {
   const rows = parseExternal(html, text);
   if (!rows.length) return;
   const single = rows.length === 1 && rows[0].length === 1;
-  const res = pasteExternal(wb(), sheet(), { r: bounded.r1, c: bounded.c1 }, rows, single && (bounded.r1 !== bounded.r2 || bounded.c1 !== bounded.c2) ? bounded : null);
+  // cells copied in another OfficeMini window bring their formulas along ("values only" leaves them out)
+  const formulas = mode === "all" || mode === "formulas" ? parseFormulas(html) : null;
+  const res = pasteExternal(wb(), sheet(), { r: bounded.r1, c: bounded.c1 }, rows, single && (bounded.r1 !== bounded.r2 || bounded.c1 !== bounded.c2) ? bounded : null, formulas);
   styles().invalidate();
   applyChanges(res.changes, "Paste");
   grid().setRanges([res.resultRange], { r: res.resultRange.r1, c: res.resultRange.c1 });
@@ -978,24 +1003,37 @@ function moveRange(src: Range, dst: Range, copy: boolean) {
   const s = sheet();
   const changes: CellChange[] = [];
   const moved = new Map<number, Cell | null>();
-  for (let r = src.r1; r <= src.r2; r++) for (let c = src.c1; c <= src.c2; c++) {
+  // Only the visible cells travel, and they land on visible cells: hidden rows and columns stay
+  // where they are on both sides.
+  const srcRows = visibleRows(s, src.r1, src.r2), srcCols = visibleCols(s, src.c1, src.c2);
+  const dstRows = visibleRowsFrom(s, dst.r1, srcRows.length), dstCols = visibleColsFrom(s, dst.c1, srcCols.length);
+  srcRows.forEach((r, i) => srcCols.forEach((c, j) => {
     const cell = s.cells.get(key(r, c)) || null;
-    moved.set(key(dst.r1 + (r - src.r1), dst.c1 + (c - src.c1)), cell ? { ...cell } : null);
+    if (dstRows[i] !== undefined && dstCols[j] !== undefined) moved.set(key(dstRows[i], dstCols[j]), cell ? { ...cell } : null);
     if (!copy && cell) changes.push({ r, c, cell: null });
-  }
+  }));
   for (const [k, cell] of moved) { const r = rowOf(k), c = colOf(k); if (r >= MAXR || c >= MAXC) continue; changes.push({ r, c, cell }); }
   applyChanges(changes, copy ? "Copy cells" : "Move cells");
-  grid().setRanges([dst], { r: dst.r1, c: dst.c1 });
+  const landed: Range = { r1: dstRows[0] ?? dst.r1, c1: dstCols[0] ?? dst.c1, r2: dstRows[dstRows.length - 1] ?? dst.r2, c2: dstCols[dstCols.length - 1] ?? dst.c2 };
+  grid().setRanges([landed], { r: landed.r1, c: landed.c1 });
 }
 
 function fillDirection(dir: "down" | "right") {
   const rg = selRange();
+  const s = sheet();
+  // "The row above" and "the first row" are the ones that can be seen: a filtered list fills
+  // from the visible row above, not from a filtered-out one in between.
   if (dir === "down") {
-    if (rg.r1 === rg.r2) { const src = { ...rg, r1: rg.r1 - 1, r2: rg.r1 - 1 }; if (src.r1 < 0) return; applyChanges(fillChanges(wb(), sheet(), src, rg), "Fill down"); return; }
-    applyChanges(fillChanges(wb(), sheet(), { ...rg, r2: rg.r1 }, { ...rg, r1: rg.r1 + 1 }), "Fill down");
+    const rows = visibleRows(s, rg.r1, rg.r2);
+    if (!rows.length) return;
+    if (rows.length === 1) { let a = rows[0] - 1; while (a >= 0 && rowHidden(s, a)) a--; if (a < 0) return; applyChanges(fillChanges(wb(), s, { ...rg, r1: a, r2: a }, { ...rg, r1: rows[0], r2: rows[0] }), "Fill down"); return; }
+    applyChanges(fillChanges(wb(), s, { ...rg, r1: rows[0], r2: rows[0] }, { ...rg, r1: rows[0] + 1 }), "Fill down");
   } else {
-    if (rg.c1 === rg.c2) { const src = { ...rg, c1: rg.c1 - 1, c2: rg.c1 - 1 }; if (src.c1 < 0) return; applyChanges(fillChanges(wb(), sheet(), src, rg), "Fill right"); return; }
-    applyChanges(fillChanges(wb(), sheet(), { ...rg, c2: rg.c1 }, { ...rg, c1: rg.c1 + 1 }), "Fill right");
+    const cols = visibleCols(s, rg.c1, rg.c2);
+    if (!cols.length) return;
+    const hid = colHiddenTest(s);
+    if (cols.length === 1) { let a = cols[0] - 1; while (a >= 0 && hid(a)) a--; if (a < 0) return; applyChanges(fillChanges(wb(), s, { ...rg, c1: a, c2: a }, { ...rg, c1: cols[0], c2: cols[0] }), "Fill right"); return; }
+    applyChanges(fillChanges(wb(), s, { ...rg, c1: cols[0], c2: cols[0] }, { ...rg, c1: cols[0] + 1 }), "Fill right");
   }
 }
 
@@ -1009,11 +1047,35 @@ function clearSelection(what: "contents" | "formats" | "all") {
 
 function selectedRows(): [number, number] { const rg = rawSel(); return [rg.r1, isWholeCols(rg) ? rg.r1 : rg.r2]; }
 function selectedCols(): [number, number] { const rg = rawSel(); return [rg.c1, isWholeRows(rg) ? rg.c1 : rg.c2]; }
+/** How many rows / columns of a span can be seen: what "insert 3 rows" and "delete 3 rows" count. */
+function rowCount(r1: number, r2: number): number { return Math.max(1, hidesRows(sheet()) ? visibleRows(sheet(), r1, r2).length : r2 - r1 + 1); }
+function colCount(c1: number, c2: number): number { return Math.max(1, visibleCols(sheet(), c1, c2).length); }
 
 function insertRows(at: number, count: number) { structural(`Insert ${count} row${count > 1 ? "s" : ""}`, () => insertDelete(wb(), grid().sheetIdx(), "row", at, count), true); grid().selectRows(at, at + count - 1); }
 function insertCols(at: number, count: number) { clearFilterState(sheet()); structural(`Insert ${count} column${count > 1 ? "s" : ""}`, () => insertDelete(wb(), grid().sheetIdx(), "col", at, count), true); grid().selectCols(at, at + count - 1); }
-function deleteRows(r1: number, r2: number) { structural(`Delete row${r2 > r1 ? "s" : ""}`, () => insertDelete(wb(), grid().sheetIdx(), "row", r1, -(r2 - r1 + 1)), true); grid().setActive(r1, grid().selection.active.c); }
-function deleteCols(c1: number, c2: number) { clearFilterState(sheet()); structural(`Delete column${c2 > c1 ? "s" : ""}`, () => insertDelete(wb(), grid().sheetIdx(), "col", c1, -(c2 - c1 + 1)), true); grid().setActive(grid().selection.active.r, c1); }
+/**
+ * Deleting rows r1..r2 deletes the ones that can be seen. Rows in between that are filtered out
+ * or hidden were never part of what was selected, and deleting them would lose data nobody
+ * looked at. The runs are worked out first and removed bottom-up, so each one still sits where
+ * it was found.
+ */
+function deleteRows(r1: number, r2: number) {
+  const runs = runsOf(visibleRows(sheet(), r1, r2));
+  if (!runs.length) { flash("Nothing visible to delete"); return; }
+  const n = runs.reduce((a, [x, y]) => a + (y - x + 1), 0);
+  structural(`Delete row${n > 1 ? "s" : ""}`, () => { for (const [a, b] of [...runs].reverse()) insertDelete(wb(), grid().sheetIdx(), "row", a, -(b - a + 1)); }, true);
+  const at = grid().nearestVisible(runs[0][0], grid().selection.active.c);
+  grid().setActive(at.r, at.c);
+}
+function deleteCols(c1: number, c2: number) {
+  const runs = runsOf(visibleCols(sheet(), c1, c2));
+  if (!runs.length) { flash("Nothing visible to delete"); return; }
+  const n = runs.reduce((a, [x, y]) => a + (y - x + 1), 0);
+  clearFilterState(sheet());
+  structural(`Delete column${n > 1 ? "s" : ""}`, () => { for (const [a, b] of [...runs].reverse()) insertDelete(wb(), grid().sheetIdx(), "col", a, -(b - a + 1)); }, true);
+  const at = grid().nearestVisible(grid().selection.active.r, runs[0][0]);
+  grid().setActive(at.r, at.c);
+}
 
 function hideRowsCols(kind: "row" | "col", hidden: boolean, a?: number, b?: number) {
   const [x1, x2] = kind === "row" ? (a !== undefined ? [a, b ?? a] : selectedRows()) : (a !== undefined ? [a, b ?? a] : selectedCols());
@@ -1213,7 +1275,9 @@ function removeDuplicates() {
   const seen = new Set<string>();
   const keep: number[] = [];
   let removed = 0;
-  for (let r = rg.r1 + (hasHeader ? 1 : 0); r <= rg.r2; r++) {
+  // Only the rows that can be seen are compared and closed up; filtered-out rows stay put.
+  const rows = visibleRows(s, rg.r1 + (hasHeader ? 1 : 0), rg.r2);
+  for (const r of rows) {
     const sig: string[] = [];
     for (let c = rg.c1; c <= rg.c2; c++) { const v = s.cells.get(key(r, c))?.v ?? null; sig.push(v === null ? "" : typeof v === "string" ? "s" + v.toLocaleLowerCase("tr") : typeof v + ":" + String(isError(v) ? v.e : v)); }
     const k = sig.join("\u0001");
@@ -1222,19 +1286,18 @@ function removeDuplicates() {
   }
   if (!removed) { flash("No duplicate rows found"); return; }
   const changes: CellChange[] = [];
-  let target = rg.r1 + (hasHeader ? 1 : 0);
-  for (const r of keep) {
+  keep.forEach((r, i) => {
+    const target = rows[i];
     if (r !== target) for (let c = rg.c1; c <= rg.c2; c++) { const cell = s.cells.get(key(r, c)); changes.push({ r: target, c, cell: cell ? movedCell(cell, target - r) : null }); }
-    target++;
-  }
-  for (let r = target; r <= rg.r2; r++) for (let c = rg.c1; c <= rg.c2; c++) if (s.cells.has(key(r, c))) changes.push({ r, c, cell: null });
+  });
+  for (const r of rows.slice(keep.length)) for (let c = rg.c1; c <= rg.c2; c++) if (s.cells.has(key(r, c))) changes.push({ r, c, cell: null });
   applyChanges(changes, "Remove duplicates");
   flash(`${removed} duplicate row${removed === 1 ? "" : "s"} removed`);
 }
 
 function trimWhitespace() {
   const changes: CellChange[] = [];
-  for (const rg of selRanges()) for (let r = rg.r1; r <= rg.r2; r++) for (let c = rg.c1; c <= rg.c2; c++) {
+  for (const rg of visibleSel()) for (let r = rg.r1; r <= rg.r2; r++) for (let c = rg.c1; c <= rg.c2; c++) {
     const cell = sheet().cells.get(key(r, c));
     if (cell && typeof cell.v === "string" && !cell.f) { const t = cell.v.replace(/\s+/g, " ").trim(); if (t !== cell.v) changes.push({ r, c, cell: { ...cell, v: t } }); }
   }
@@ -1648,8 +1711,11 @@ function buildFindbar() {
     const sheets = opts.allSheets && !scope ? wb().sheets.map((s, i) => [s, i] as const) : [[sheet(), grid().sheetIdx()] as const];
     for (const [s, i] of sheets) {
       if (s.state !== "visible") continue;
+      // Cells in filtered-out or hidden rows and columns are not searched: a match nobody can
+      // see cannot be stepped to, and Replace all must not rewrite it behind the filter.
+      const anyRows = hidesRows(s), colHid = colHiddenTest(s);
       const keys = Array.from(s.cells.keys()).sort((a, b) => a - b);
-      for (const k of keys) { const cell = s.cells.get(k)!; if (cell.v === null && cell.f === undefined) continue; if (cell.f !== undefined && !opts.formulas) continue; const r = rowOf(k), c = colOf(k); if (inScope(i, r, c) && matcher(cellText(s, cell))) matches.push({ sheet: i, r, c }); }
+      for (const k of keys) { const cell = s.cells.get(k)!; if (cell.v === null && cell.f === undefined) continue; if (cell.f !== undefined && !opts.formulas) continue; const r = rowOf(k), c = colOf(k); if ((anyRows && rowHidden(s, r)) || colHid(c)) continue; if (inScope(i, r, c) && matcher(cellText(s, cell))) matches.push({ sheet: i, r, c }); }
     }
   };
   const showCount = () => {
@@ -1696,6 +1762,7 @@ function buildFindbar() {
     const s = wb().sheets[m.sheet];
     const cell = s.cells.get(key(m.r, m.c));
     if (!cell) return null;
+    if (rowHidden(s, m.r) || colHidden(s, m.c)) return null;  // filtered out since the search ran
     if (cell.f !== undefined && !opts.formulas) return null; // never turn a formula into a constant silently
     const text = cellText(s, cell);
     if (!matcher || !matcher(text)) return null;
@@ -1818,7 +1885,7 @@ function showContextMenu(e: MouseEvent, hit: Hit) {
   const s = sheet();
   if (hit.type === "colHeader") {
     if (!grid().selection.ranges.some((rg) => isWholeCols(rg) && hit.c >= rg.c1 && hit.c <= rg.c2)) grid().selectCols(hit.c, hit.c);
-    const [c1, c2] = selectedCols(); const n = c2 - c1 + 1;
+    const [c1, c2] = selectedCols(); const n = colCount(c1, c2);
     showMenu(at, [
       { label: "Cut", key: `${MOD}+X`, action: () => copySelection(true) }, { label: "Copy", key: `${MOD}+C`, action: () => copySelection(false) }, { label: "Paste", key: `${MOD}+V`, action: () => pasteFromSystem() },
       { sep: true },
@@ -1830,7 +1897,7 @@ function showContextMenu(e: MouseEvent, hit: Hit) {
       { label: `Hide column${n > 1 ? "s" : ""}`, action: () => hideRowsCols("col", true) },
       { label: "Unhide all columns", action: () => unhideAll("col") },
       { label: "Resize column…", action: () => columnWidthDialog() },
-      { label: "Fit to data", action: () => autoFit("col", Array.from({ length: n }, (_, i) => c1 + i)) },
+      { label: "Fit to data", action: () => autoFit("col", visibleCols(sheet(), c1, c2)) },
       { sep: true },
       { label: "Sort sheet A → Z", action: () => sortBy(hit.c, true, dataBlock(s, s.autoFilter ? s.autoFilter.r1 : 0, hit.c)) },
       { label: "Sort sheet Z → A", action: () => sortBy(hit.c, false, dataBlock(s, s.autoFilter ? s.autoFilter.r1 : 0, hit.c)) },
@@ -1843,7 +1910,7 @@ function showContextMenu(e: MouseEvent, hit: Hit) {
   }
   if (hit.type === "rowHeader") {
     if (!grid().selection.ranges.some((rg) => isWholeRows(rg) && hit.r >= rg.r1 && hit.r <= rg.r2)) grid().selectRows(hit.r, hit.r);
-    const [r1, r2] = selectedRows(); const n = r2 - r1 + 1;
+    const [r1, r2] = selectedRows(); const n = rowCount(r1, r2);
     showMenu(at, [
       { label: "Cut", key: `${MOD}+X`, action: () => copySelection(true) }, { label: "Copy", key: `${MOD}+C`, action: () => copySelection(false) }, { label: "Paste", key: `${MOD}+V`, action: () => pasteFromSystem() },
       { sep: true },
@@ -1855,7 +1922,7 @@ function showContextMenu(e: MouseEvent, hit: Hit) {
       { label: `Hide row${n > 1 ? "s" : ""}`, action: () => hideRowsCols("row", true) },
       { label: "Unhide all rows", action: () => unhideAll("row") },
       { label: "Resize row…", action: () => rowHeightDialog() },
-      { label: "Fit to data", action: () => autoFit("row", Array.from({ length: n }, (_, i) => r1 + i)) },
+      { label: "Fit to data", action: () => autoFit("row", visibleRows(sheet(), r1, r2)) },
       { sep: true },
       { label: `Freeze up to row ${hit.r + 1}`, action: () => setFreeze(hit.r + 1, s.freeze?.cols || 0) },
     ]);
@@ -1863,7 +1930,7 @@ function showContextMenu(e: MouseEvent, hit: Hit) {
   }
   if (hit.type !== "cell") return;
   const rg = rawSel();
-  const nr = isWholeCols(rg) ? 1 : rg.r2 - rg.r1 + 1, nc = isWholeRows(rg) ? 1 : rg.c2 - rg.c1 + 1;
+  const nr = isWholeCols(rg) ? 1 : rowCount(rg.r1, rg.r2), nc = isWholeRows(rg) ? 1 : colCount(rg.c1, rg.c2);
   const merged = s.merges.some((m) => m.r1 === rg.r1 && m.c1 === rg.c1 && m.r2 === rg.r2 && m.c2 === rg.c2);
   const link = grid().hyperlinkAt(hit.r, hit.c);
   showMenu(at, [
@@ -1874,8 +1941,8 @@ function showContextMenu(e: MouseEvent, hit: Hit) {
     { sep: true },
     { label: `Insert ${nr} row${nr > 1 ? "s" : ""} above`, action: () => insertRows(rg.r1, nr) },
     { label: `Insert ${nc} column${nc > 1 ? "s" : ""} left`, action: () => insertCols(rg.c1, nc) },
-    { label: `Delete row${nr > 1 ? "s" : ""}`, action: () => deleteRows(rg.r1, rg.r1 + nr - 1) },
-    { label: `Delete column${nc > 1 ? "s" : ""}`, action: () => deleteCols(rg.c1, rg.c1 + nc - 1) },
+    { label: `Delete row${nr > 1 ? "s" : ""}`, action: () => deleteRows(rg.r1, isWholeCols(rg) ? rg.r1 : rg.r2) },
+    { label: `Delete column${nc > 1 ? "s" : ""}`, action: () => deleteCols(rg.c1, isWholeRows(rg) ? rg.c1 : rg.c2) },
     { sep: true },
     { label: "Delete contents", key: "Delete", action: () => clearSelection("contents") },
     { label: "Clear formatting", key: `${MOD}+\\`, action: () => clearSelection("formats") },
@@ -1960,7 +2027,7 @@ function buildMenubar() {
     ] },
     { title: "Insert", alt: "i", items: () => {
       const [r1, r2] = selectedRows(); const [c1, c2] = selectedCols();
-      const nr = r2 - r1 + 1, nc = c2 - c1 + 1;
+      const nr = rowCount(r1, r2), nc = colCount(c1, c2);
       return [
         { label: `${nr} row${nr > 1 ? "s" : ""} above`, key: `${MOD}+Alt+=`, action: () => insertRows(r1, nr) },
         { label: `${nr} row${nr > 1 ? "s" : ""} below`, action: () => insertRows(r2 + 1, nr) },
@@ -2272,7 +2339,8 @@ function buildStatusbar() {
       const s = sheet();
       const ranges = selRanges();
       const seen = ranges.length > 1 ? new Set<number>() : null; // overlapping ranges must not count twice
-      const hidden = s.hiddenRowsByFilter;
+      // what is summed is what can be seen
+      const anyRows = hidesRows(s), colHid = colHiddenTest(s);
       let cells = 0;
       const add = (v: Value) => { if (v !== null && v !== "") cnt++; if (typeof v === "number") { sum += v; n++; if (v < min) min = v; if (v > max) max = v; } };
       for (const rg of ranges) {
@@ -2280,10 +2348,10 @@ function buildStatusbar() {
         cells += size;
         if (size > s.cells.size) {
           // sparse iteration: walk the cell map instead of the (larger) rectangle
-          for (const [k, cell] of s.cells) { const r = (k / MAXC) | 0, c = k - r * MAXC; if (r < rg.r1 || r > rg.r2 || c < rg.c1 || c > rg.c2 || (hidden.size && hidden.has(r))) continue; if (seen) { if (seen.has(k)) continue; seen.add(k); } add(cell.v); }
+          for (const [k, cell] of s.cells) { const r = (k / MAXC) | 0, c = k - r * MAXC; if (r < rg.r1 || r > rg.r2 || c < rg.c1 || c > rg.c2 || (anyRows && rowHidden(s, r)) || colHid(c)) continue; if (seen) { if (seen.has(k)) continue; seen.add(k); } add(cell.v); }
           continue;
         }
-        for (let r = rg.r1; r <= rg.r2; r++) { if (hidden.size && hidden.has(r)) continue; for (let c = rg.c1; c <= rg.c2; c++) { const k = key(r, c); const cell = s.cells.get(k); if (!cell) continue; if (seen) { if (seen.has(k)) continue; seen.add(k); } add(cell.v); } }
+        for (let r = rg.r1; r <= rg.r2; r++) { if (anyRows && rowHidden(s, r)) continue; for (let c = rg.c1; c <= rg.c2; c++) { if (colHid(c)) continue; const k = key(r, c); const cell = s.cells.get(k); if (!cell) continue; if (seen) { if (seen.has(k)) continue; seen.add(k); } add(cell.v); } }
       }
       if (n >= 2) stats.textContent = `Sum: ${fmtNum(sum)}   Avg: ${fmtNum(sum / n)}   Min: ${fmtNum(min)}   Max: ${fmtNum(max)}   Count: ${cnt}`;
       else if (cells > 1) stats.textContent = cnt ? `Count: ${cnt}` : "";
@@ -2393,8 +2461,9 @@ function installGlobalKeys() {
     if (k === "F2") { prevent(); beginEdit(null, false); return; }
     if (k === "Escape") { prevent(); closeAllPopups(); if (app.findbar?.visible) app.findbar.hide(); g.clipRange = null; cancelCut(); g.setActive(g.selection.active.r, g.selection.active.c); return; }
     if (k === "Delete" || (k === "Backspace" && !mod)) { prevent(); clearSelection("contents"); return; }
-    if (k === "Home") { prevent(); if (mod) g.setActive(0, 0, shift); else g.setActive(g.selection.active.r, 0, shift); return; }
-    if (k === "End") { prevent(); const s = sheet(); if (mod) g.setActive(Math.max(0, s.maxRow), Math.max(0, s.maxCol), shift); else { let c = Math.max(0, s.maxCol); while (c > 0 && !s.cells.has(key(g.selection.active.r, c))) c--; g.setActive(g.selection.active.r, c, shift); } return; }
+    // Home / End go to the first / last cell that can be seen
+    if (k === "Home") { prevent(); const p = mod ? g.nearestVisible(0, 0) : g.nearestVisible(g.selection.active.r, 0); g.setActive(p.r, p.c, shift); return; }
+    if (k === "End") { prevent(); const s = sheet(); if (mod) { const p = g.nearestVisible(Math.max(0, s.maxRow), Math.max(0, s.maxCol), true); g.setActive(p.r, p.c, shift); } else { let c = Math.max(0, s.maxCol); while (c > 0 && (!s.cells.has(key(g.selection.active.r, c)) || colHidden(s, c))) c--; g.setActive(g.selection.active.r, g.nearestVisible(g.selection.active.r, c).c, shift); } return; }
     if (k === "PageDown" || k === "PageUp") { prevent(); if (mod) nextSheet(k === "PageDown" ? 1 : -1); else if (alt) { g.host.scrollLeft += (k === "PageDown" ? 1 : -1) * (g.host.clientWidth - 60); } else g.pageMove(k === "PageDown" ? 1 : -1, shift); return; }
     if (k === " " && (mod || shift)) { prevent(); const rg = rawSel(); if (mod && shift) g.selectAll(); else if (mod) g.selectCols(rg.c1, rg.c2); else g.selectRows(rg.r1, rg.r2); return; }
     if (k === "F9") { prevent(); const n = app.engine!.recalcAll(); g.invalidate(); flash(`Recalculated (${n} changed)`); return; }
@@ -2464,7 +2533,7 @@ function installGlobalKeys() {
       return;
     }
     if (mod && alt) {
-      if (k === "=" || k === "+") { prevent(); const rg = rawSel(); if (isWholeCols(rg)) insertCols(rg.c1, rg.c2 - rg.c1 + 1); else { const [r1, r2] = selectedRows(); insertRows(r1, r2 - r1 + 1); } return; }
+      if (k === "=" || k === "+") { prevent(); const rg = rawSel(); if (isWholeCols(rg)) insertCols(rg.c1, colCount(rg.c1, rg.c2)); else { const [r1, r2] = selectedRows(); insertRows(r1, rowCount(r1, r2)); } return; }
       if (k === "-") { prevent(); const rg = rawSel(); if (isWholeCols(rg)) deleteCols(rg.c1, rg.c2); else { const [r1, r2] = selectedRows(); deleteRows(r1, r2); } return; }
       // AltGr on Windows / Linux arrives as Ctrl+Alt: characters such as @ ₺ # $ [ ] { } \ | start an edit
       if (e.ctrlKey && e.altKey && !e.metaKey && k.length === 1 && !/[\x00-\x1f]/.test(k)) { prevent(); if (app.welcome) hideWelcome(); beginEdit(k, true); return; }

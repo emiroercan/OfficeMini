@@ -444,12 +444,15 @@ export class Grid {
     return out;
   }
 
-  /** Arrow-key movement; `jump` = Ctrl (to the edge of a data block like Excel/Sheets). */
+  /**
+   * Arrow-key movement; `jump` = Ctrl (to the edge of a data block like Excel/Sheets). `dr` / `dc`
+   * may be more than one step (Page Up / Down). Hidden rows and columns are stepped over as if
+   * they were not there: a step is one *visible* row, and a jump follows the visible cells.
+   */
   moveActive(dr: number, dc: number, extend: boolean, jump: boolean) {
     const s = this.sheet();
     const base = extend ? this.selection.ranges[0] : null;
     let { r, c } = extend ? this.extendCursor() : this.selection.active;
-    const startR = r, startC = c;
     // The sheet ends at its extent. A jump (Ctrl+arrow) stops on the last row/column;
     // a single step may land one past it, and setActive then grows the sheet by that much.
     const maxR = Math.min(MAXR - 1, jump ? this.nrows - 1 : this.nrows);
@@ -459,24 +462,72 @@ export class Grid {
       const m = mergeAt(s, r, c);
       if (m) { if (dr > 0) r = m.r2; if (dc > 0) c = m.c2; if (dr < 0) r = m.r1; if (dc < 0) c = m.c1; }
     }
+    const ur = Math.sign(dr), uc = Math.sign(dc);
+    const inside = (rr: number, cc: number) => rr >= 0 && cc >= 0 && rr <= maxR && cc <= maxC;
+    const hiddenAt = (rr: number, cc: number) => (ur !== 0 && this.rowH(rr) === 0) || (uc !== 0 && colHidden(s, cc));
+    /** The next visible cell in the direction of travel, or null at the edge of the sheet. */
+    const next = (rr: number, cc: number): { r: number; c: number } | null => {
+      do { rr += ur; cc += uc; } while (inside(rr, cc) && hiddenAt(rr, cc));
+      return inside(rr, cc) ? { r: rr, c: cc } : null;
+    };
     if (jump) {
       const has = (rr: number, cc: number) => { const cell = s.cells.get(key(rr, cc)); return !!cell && cell.v !== null && cell.v !== ""; };
-      const step = () => { r += dr; c += dc; };
-      const inBounds = () => r >= 0 && c >= 0 && r <= maxR && c <= maxC;
-      const cur = has(r, c);
+      const lastR = Math.max(s.maxRow, 0), lastC = Math.max(s.maxCol, 0);
       const r0 = r, c0 = c;
-      const nr = r + dr, nc = c + dc;
-      if (cur && nr >= 0 && nc >= 0 && has(nr, nc)) { while (inBounds() && has(r + dr, c + dc)) step(); }
-      else { step(); while (inBounds() && !has(r, c)) { if ((dr > 0 && r >= Math.max(s.maxRow, 0)) || (dc > 0 && c >= Math.max(s.maxCol, 0)) || (dr < 0 && r <= 0) || (dc < 0 && c <= 0)) break; step(); } if (!inBounds()) { r = Math.max(0, Math.min(maxR, r)); c = Math.max(0, Math.min(maxC, c)); } if (!has(r, c)) { if (dr > 0) r = r0 >= Math.max(s.maxRow, 0) ? maxR : Math.max(s.maxRow, 0); if (dc > 0) c = c0 >= Math.max(s.maxCol, 0) ? maxC : Math.max(s.maxCol, 0); if (dr < 0) r = 0; if (dc < 0) c = 0; } }
-    } else { r += dr; c += dc; }
-    r = Math.max(0, Math.min(maxR, r)); c = Math.max(0, Math.min(maxC, c));
-    // skip hidden rows/cols
-    let guard = 0;
-    while (guard++ < maxR + 1 && ((dr && this.rowH(r) === 0) || (dc && colHidden(s, c)))) { r += dr || 0; c += dc || 0; if (r < 0 || c < 0 || r > maxR || c > maxC) { r = Math.max(0, Math.min(maxR, r)); c = Math.max(0, Math.min(maxC, c)); break; } }
-    // no visible row/column in that direction: stay put instead of landing on a hidden one
-    if ((dr && this.rowH(r) === 0) || (dc && colHidden(s, c))) { r = startR; c = startC; }
+      const n1 = next(r, c);
+      if (has(r, c) && n1 && has(n1.r, n1.c)) {
+        // inside a block: run to its last visible filled cell
+        let p = n1;
+        for (let q = next(p.r, p.c); q && has(q.r, q.c); q = next(q.r, q.c)) p = q;
+        r = p.r; c = p.c;
+      } else {
+        // at the end of a block, or on a blank: on to the next filled cell that can be seen
+        let p = n1, found = false;
+        while (p) {
+          if (has(p.r, p.c)) { found = true; break; }
+          if ((ur > 0 && p.r >= lastR) || (uc > 0 && p.c >= lastC)) break;   // nothing further out
+          p = next(p.r, p.c);
+        }
+        if (found && p) { r = p.r; c = p.c; }
+        else {
+          // nothing there: the edge of the used area (or of the grid when already past it)
+          if (ur > 0) r = r0 >= lastR ? maxR : lastR;
+          if (uc > 0) c = c0 >= lastC ? maxC : lastC;
+          if (ur < 0) r = 0;
+          if (uc < 0) c = 0;
+          // the edge itself may be hidden: the nearest visible cell short of it, else beyond it
+          if (hiddenAt(r, c)) {
+            let rr = r, cc = c;
+            while (inside(rr, cc) && hiddenAt(rr, cc) && (rr !== r0 || cc !== c0)) { rr -= ur; cc -= uc; }
+            if (inside(rr, cc) && !hiddenAt(rr, cc)) { r = rr; c = cc; }
+            else { const q = next(r, c); if (q) { r = q.r; c = q.c; } else { r = r0; c = c0; } }
+          }
+        }
+      }
+    } else {
+      // one visible row / column per step; stop at the last one there is
+      for (let i = Math.max(Math.abs(dr), Math.abs(dc)); i > 0; i--) { const q = next(r, c); if (!q) break; r = q.r; c = q.c; }
+    }
     if (extend && base) { this.selection.ranges = [this.expandToMerges(normRange(this.selection.anchor, { r, c }))]; this.cursorExt = { r, c }; this.ensureVisible(r, c); this.schedule(); this.ev.onSelect(); }
     else this.setActive(r, c);
+  }
+
+  /**
+   * The visible cell nearest to (r, c): the cell itself when it can be seen, otherwise the first
+   * visible row / column after it (before it when `back`, or when there is none after).
+   */
+  nearestVisible(r: number, c: number, back = false): { r: number; c: number } {
+    const s = this.sheet();
+    const maxR = Math.min(MAXR - 1, Math.max(this.nrows, r)), maxC = Math.min(MAXC - 1, Math.max(this.ncols, c));
+    const seek = (v: number, max: number, hidden: (i: number) => boolean): number => {
+      if (!hidden(v)) return v;
+      const scan = (d: number) => { for (let i = v + d; i >= 0 && i <= max; i += d) if (!hidden(i)) return i; return -1; };
+      const a = scan(back ? -1 : 1);
+      if (a >= 0) return a;
+      const b = scan(back ? 1 : -1);
+      return b >= 0 ? b : v;
+    };
+    return { r: seek(r, maxR, (i) => this.rowH(i) === 0), c: seek(c, maxC, (i) => colHidden(s, i)) };
   }
   private lastResize: { kind: "col" | "row"; index: number; at: number } | null = null;
   private autofitAt = 0;

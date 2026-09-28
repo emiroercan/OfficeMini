@@ -1,13 +1,14 @@
 // Copy / cut / paste. Internal pastes carry cells (values, formulas, styles)
 // and behave like Google Sheets: relative references shift with the paste
 // offset, cut keeps them. External pastes use TSV (and HTML tables).
-import { Workbook, Sheet, Cell, Range, key, Value, isError, MAXR, MAXC } from "./model";
+import { Workbook, Sheet, Cell, Range, key, Value, isError, MAXR, MAXC, visibleRows, visibleCols, visibleRowsFrom, visibleColsFrom } from "./model";
 import { shiftFormula } from "./formula/tokens";
 import { CellChange, boundRange, xfWith, inputCell, StylePatch } from "./edit";
 import { formatValue, formatCodeFor, editText } from "./numfmt";
 import { StyleResolver } from "./render-style";
 
-export interface ClipCell { r: number; c: number; cell: Cell | null; }
+/** r / c: position inside the (compacted) clip; sr / sc: the sheet cell it was copied from. */
+export interface ClipCell { r: number; c: number; cell: Cell | null; sr: number; sc: number; }
 export interface ClipData { sheet: string; range: Range; cells: ClipCell[]; cut: boolean; styles: { xf: any; font: any; fill: any; border: any; numFmt: string }[]; text?: string; }
 
 let internal: ClipData | null = null;
@@ -23,29 +24,38 @@ export function copyRange(wb: Workbook, sheet: Sheet, range0: Range, cut: boolea
   const cells: ClipCell[] = [];
   const styleIdx = new Map<number, number>();
   const styleList: ClipData["styles"] = [];
-  // Rows hidden by a filter are not copied (Excel / Sheets copy the visible cells only); the clip is compacted.
-  const rows: number[] = [];
-  for (let r = range.r1; r <= range.r2; r++) if (!(sheet.hiddenRowsByFilter.size && sheet.hiddenRowsByFilter.has(r))) rows.push(r);
+  // Hidden rows and columns (filtered out, or hidden by hand) are not copied: only the cells that
+  // can be seen go to the clipboard, closed up into one block.
+  const rows = visibleRows(sheet, range.r1, range.r2);
+  const cols = visibleCols(sheet, range.c1, range.c2);
+  const whole = rows.length === range.r2 - range.r1 + 1 && cols.length === range.c2 - range.c1 + 1;
   const rowIdx = new Map(rows.map((r, i) => [r, i]));
-  for (const r of rows) for (let c = range.c1; c <= range.c2; c++) {
+  const colIdx = new Map(cols.map((c, i) => [c, i]));
+  for (const r of rows) for (const c of cols) {
     const cell = inSel(r, c) ? sheet.cells.get(key(r, c)) : undefined;
     if (cell && !styleIdx.has(cell.s)) {
       const xf = wb.styles.xfs[cell.s] || wb.styles.xfs[0];
       styleList.push({ xf, font: wb.styles.fonts[xf.fontId], fill: wb.styles.fills[xf.fillId], border: wb.styles.borders[xf.borderId], numFmt: formatCodeFor(xf.numFmtId, wb.styles.numFmts) });
       styleIdx.set(cell.s, styleList.length - 1);
     }
-    cells.push({ r: rowIdx.get(r)!, c: c - range.c1, cell: cell ? { ...cell } : null });
+    cells.push({ r: rowIdx.get(r)!, c: colIdx.get(c)!, cell: cell ? { ...cell } : null, sr: r, sc: c });
   }
-  const clipRange: Range = rows.length && rows.length !== range.r2 - range.r1 + 1 ? { r1: range.r1, c1: range.c1, r2: range.r1 + rows.length - 1, c2: range.c2 } : { ...range };
-  internal = { sheet: sheet.name, range: clipRange, cells, cut: cut && rows.length === range.r2 - range.r1 + 1, styles: styleList };
-  internalToken = "om-sheets:" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  // text/plain: TSV of displayed values; text/html: table with basic styles
+  const clipRange: Range = whole ? { ...range } : { r1: range.r1, c1: range.c1, r2: range.r1 + Math.max(1, rows.length) - 1, c2: range.c1 + Math.max(1, cols.length) - 1 };
+  // A cut moves a block; with hidden cells in between there is no block to move, so it copies.
+  internal = { sheet: sheet.name, range: clipRange, cells, cut: cut && whole, styles: styleList };
+  internalToken = "om-sheets-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  // text/plain: TSV of displayed values; text/html: table with basic styles.
+  // The table also says where it came from, in attributes: the marker that lets this window
+  // recognise its own copy, and each formula with the cell it was copied from. Attributes are
+  // used because they survive the clipboard - WebKit drops an HTML comment on the way - and
+  // because they let another OfficeMini window, which has no access to this window's
+  // clipboard, paste the formulas instead of their values.
   const lines: string[] = [];
-  let html = `<!-- ${internalToken} --><table>`;
+  let html = `<!-- ${internalToken} --><table ${CLIP_ATTR}="${internalToken}">`;
   for (const r of rows) {
     const fields: string[] = [];
     html += "<tr>";
-    for (let c = range.c1; c <= range.c2; c++) {
+    for (const c of cols) {
       const cell = inSel(r, c) ? sheet.cells.get(key(r, c)) : undefined;
       const cs = styles.get(cell ? cell.s : 0);
       const text = cell ? styles.render(cell, cs).text : "";
@@ -53,7 +63,8 @@ export function copyRange(wb: Workbook, sheet: Sheet, range0: Range, cut: boolea
       const st: string[] = [];
       if (cs.bold) st.push("font-weight:bold"); if (cs.italic) st.push("font-style:italic"); if (cs.color) st.push("color:" + cs.color); if (cs.fill) st.push("background:" + cs.fill);
       if (cs.halign && cs.halign !== "general") st.push("text-align:" + cs.halign);
-      html += `<td${st.length ? ` style="${st.join(";")}"` : ""}>${escapeHtml(text)}</td>`;
+      const src = cell && cell.f !== undefined ? ` ${FORMULA_ATTR}="${escapeAttr(cell.f)}" ${AT_ATTR}="${r},${c}"` : "";
+      html += `<td${src}${st.length ? ` style="${st.join(";")}"` : ""}>${escapeHtml(text)}</td>`;
     }
     html += "</tr>";
     lines.push(fields.join("\t"));
@@ -64,6 +75,9 @@ export function copyRange(wb: Workbook, sheet: Sheet, range0: Range, cut: boolea
 }
 
 function escapeHtml(s: string) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function escapeAttr(s: string) { return escapeHtml(s).replace(/"/g, "&quot;"); }
+
+const CLIP_ATTR = "data-om-clip", FORMULA_ATTR = "data-om-f", AT_ATTR = "data-om-at";
 
 export function clearInternalClip() { internal = null; }
 /** Esc after Ctrl+X: the data stays copied but the source is no longer deleted on paste. */
@@ -72,6 +86,39 @@ export function cancelCut() { if (internal) internal.cut = false; }
 /** Is the HTML on the system clipboard the one we wrote last? */
 export function isOurHtml(html: string | null): boolean {
   return !!html && !!internalToken && html.includes(internalToken);
+}
+/** Was the HTML copied from an OfficeMini sheet - this window or another one? */
+export function isSheetHtml(html: string | null): boolean {
+  return !!html && html.includes(CLIP_ATTR + "=");
+}
+
+/** A formula carried by a copied cell, with the cell it was copied from. */
+export interface CopiedFormula { f: string; r: number; c: number; }
+
+/**
+ * The formulas in a table copied from an OfficeMini sheet, laid out like parseExternal()'s grid
+ * (null where the cell holds a plain value). Null when the HTML carries none.
+ */
+export function parseFormulas(html: string | null): (CopiedFormula | null)[][] | null {
+  if (!html || !html.includes(FORMULA_ATTR + "=")) return null;
+  try {
+    const table = new DOMParser().parseFromString(html, "text/html").querySelector("table");
+    if (!table) return null;
+    const out: (CopiedFormula | null)[][] = [];
+    let any = false;
+    for (const tr of Array.from(table.querySelectorAll("tr"))) {
+      const row: (CopiedFormula | null)[] = [];
+      for (const td of Array.from(tr.children)) {
+        if (!/^t[dh]$/i.test(td.tagName)) continue;
+        const f = td.getAttribute(FORMULA_ATTR), at = /^(\d+),(\d+)$/.exec(td.getAttribute(AT_ATTR) || "");
+        if (f && at) { row.push({ f, r: parseInt(at[1], 10), c: parseInt(at[2], 10) }); any = true; } else row.push(null);
+        const span = parseInt(td.getAttribute("colspan") || "1", 10) || 1;
+        for (let i = 1; i < span; i++) row.push(null);
+      }
+      out.push(row);
+    }
+    return any ? out : null;
+  } catch { return null; }
 }
 
 export type PasteMode = "all" | "values" | "formats" | "formulas" | "transpose";
@@ -82,33 +129,25 @@ export type PasteMode = "all" | "values" | "formats" | "formulas" | "transpose";
  * clip is tiled (like Sheets); a single-cell clip fills the whole selection.
  */
 /**
- * Rows a paste lands on, starting at `from`. Rows the filter has hidden (or that were hidden
- * by hand) are skipped, so pasting a column of values into a filtered list fills the rows you
- * can see instead of the ones in between. `count` rows always come back; if the sheet runs out
- * of visible rows the remainder continues past the end.
+ * A paste lands on visible cells only. Rows and columns that are filtered out or hidden are
+ * skipped, so a column of values pasted into a filtered list fills the rows you can see instead
+ * of the ones in between, and the size of the target selection is counted in visible cells.
  */
-function rowIsHidden(sheet: Sheet, r: number): boolean {
-  return !!sheet.rows.get(r)?.hidden || sheet.hiddenRowsByFilter.has(r);
-}
-
-function pasteRows(sheet: Sheet, from: number, count: number): number[] {
-  const out: number[] = [];
-  let r = from;
-  while (out.length < count && r < MAXR) { if (!rowIsHidden(sheet, r)) out.push(r); r++; }
-  while (out.length < count) out.push(MAXR - 1);
-  return out;
-}
+function pasteRows(sheet: Sheet, from: number, count: number): number[] { return visibleRowsFrom(sheet, from, count); }
+function pasteCols(sheet: Sheet, from: number, count: number): number[] { return visibleColsFrom(sheet, from, count); }
 
 export function pasteInternal(wb: Workbook, sheet: Sheet, target: Range, mode: PasteMode): { changes: CellChange[]; resultRange: Range; cutSource: { sheet: string; range: Range } | null } {
   const clip = internal!;
   const h = clip.range.r2 - clip.range.r1 + 1, w = clip.range.c2 - clip.range.c1 + 1;
-  const th = target.r2 - target.r1 + 1, tw = target.c2 - target.c1 + 1;
+  // the target's size is what can be seen of it
+  const th = Math.max(1, visibleRows(sheet, target.r1, target.r2).length), tw = Math.max(1, visibleCols(sheet, target.c1, target.c2).length);
   const transpose = mode === "transpose";
   const ch = transpose ? w : h, cw = transpose ? h : w;
   const repR = th >= ch && th % ch === 0 && (th > ch || tw > cw) && !clip.cut ? th / ch : 1;
   const repC = tw >= cw && tw % cw === 0 && (th > ch || tw > cw) && !clip.cut ? tw / cw : 1;
   const changes: CellChange[] = [];
   const rows = pasteRows(sheet, target.r1, repR * ch);
+  const cols = pasteCols(sheet, target.c1, repC * cw);
   const styleMap = new Map<number, number>();
   const mapStyle = (cell: Cell): number => {
     // Same workbook: style indices are valid as-is (clipboard survives sheet switches).
@@ -118,12 +157,13 @@ export function pasteInternal(wb: Workbook, sheet: Sheet, target: Range, mode: P
   for (let rr = 0; rr < repR; rr++) for (let cc = 0; cc < repC; cc++) {
     for (const cc0 of clip.cells) {
       const pr = transpose ? cc0.c : cc0.r, pc = transpose ? cc0.r : cc0.c;
-      const r = rows[rr * ch + pr], c = target.c1 + cc * cw + pc;
-      if (r === undefined || r >= MAXR || c >= MAXC) continue;
+      const r = rows[rr * ch + pr], c = cols[cc * cw + pc];
+      if (r === undefined || c === undefined || r >= MAXR || c >= MAXC) continue;
       const existing = sheet.cells.get(key(r, c));
       const src = cc0.cell;
       if (!src) { if (mode !== "formats" && existing) changes.push({ r, c, cell: existing.s && mode === "values" ? { v: null, s: existing.s } : null }); continue; }
-      const dr = r - (clip.range.r1 + cc0.r), dc = c - (clip.range.c1 + cc0.c);
+      // relative references shift by the distance from the cell it was really copied from
+      const dr = r - cc0.sr, dc = c - cc0.sc;
       let cell: Cell;
       if (mode === "values") cell = { v: src.v, s: existing ? existing.s : 0 };
       else if (mode === "formats") { if (!existing) { changes.push({ r, c, cell: { v: null, s: mapStyle(src) } }); continue; } cell = { ...existing, s: mapStyle(src) }; }
@@ -134,7 +174,7 @@ export function pasteInternal(wb: Workbook, sheet: Sheet, target: Range, mode: P
       changes.push({ r, c, cell });
     }
   }
-  const resultRange: Range = { r1: target.r1, c1: target.c1, r2: rows[rows.length - 1] ?? target.r1, c2: target.c1 + repC * cw - 1 };
+  const resultRange: Range = { r1: rows[0] ?? target.r1, c1: cols[0] ?? target.c1, r2: rows[rows.length - 1] ?? target.r1, c2: cols[cols.length - 1] ?? target.c1 };
   void styleMap; void srcSheetIsThis;
   return { changes, resultRange, cutSource: clip.cut ? { sheet: clip.sheet, range: clip.range } : null };
 }
@@ -184,24 +224,33 @@ export function parseExternal(html: string | null, text: string): string[][] {
   return rows;
 }
 
-export function pasteExternal(wb: Workbook, sheet: Sheet, at: { r: number; c: number }, grid: string[][], target: Range | null): { changes: CellChange[]; resultRange: Range } {
+/**
+ * Paste a grid of text that came from outside this window. `formulas`, when given, holds the
+ * formulas of cells copied from another OfficeMini window: those cells get the formula, with
+ * its relative references moved by the distance from the cell it was copied from - the same
+ * result as a paste inside one window.
+ */
+export function pasteExternal(wb: Workbook, sheet: Sheet, at: { r: number; c: number }, grid: string[][], target: Range | null, formulas?: (CopiedFormula | null)[][] | null): { changes: CellChange[]; resultRange: Range } {
   const changes: CellChange[] = [];
   let maxC = 0;
   const single = grid.length === 1 && grid[0].length === 1;
   const reps = single && target ? target : null;
-  const put = (r: number, c: number, text: string) => {
+  const put = (r: number, c: number, text: string, i: number, j: number) => {
     if (r >= MAXR || c >= MAXC) return;
-    const cell = inputCell(wb, sheet, r, c, text);
+    const from = formulas?.[i]?.[j];
+    const cell = inputCell(wb, sheet, r, c, from ? "=" + shiftFormula(from.f, r - from.r, c - from.c) : text);
     changes.push({ r, c, cell });
   };
   if (reps) {
-    for (let r = reps.r1; r <= reps.r2; r++) for (let c = reps.c1; c <= reps.c2; c++) if (!rowIsHidden(sheet, r)) put(r, c, grid[0][0]);
+    for (const r of visibleRows(sheet, reps.r1, reps.r2)) for (const c of visibleCols(sheet, reps.c1, reps.c2)) put(r, c, grid[0][0], 0, 0);
     return { changes, resultRange: reps };
   }
-  // Same rule as an internal paste: rows the filter hides are skipped, not written through.
+  // Same rule as an internal paste: hidden rows and columns are skipped, not written through.
+  for (const row of grid) maxC = Math.max(maxC, row.length);
   const rows = pasteRows(sheet, at.r, grid.length);
-  grid.forEach((row, i) => { row.forEach((text, j) => { put(rows[i], at.c + j, text); }); maxC = Math.max(maxC, row.length); });
-  return { changes, resultRange: { r1: at.r, c1: at.c, r2: rows[rows.length - 1] ?? at.r, c2: at.c + Math.max(0, maxC - 1) } };
+  const cols = pasteCols(sheet, at.c, maxC);
+  grid.forEach((row, i) => { row.forEach((text, j) => { if (rows[i] !== undefined && cols[j] !== undefined) put(rows[i], cols[j], text, i, j); }); });
+  return { changes, resultRange: { r1: rows[0] ?? at.r, c1: cols[0] ?? at.c, r2: rows[rows.length - 1] ?? at.r, c2: cols[cols.length - 1] ?? at.c } };
 }
 
 export { formatValue, editText, xfWith, isError };
