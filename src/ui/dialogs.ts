@@ -6,7 +6,8 @@ import { twipsToPt, ptToTwips } from "../docx/units";
 
 export { showDialog, closeDialog, promptDialog } from "./dialog-core";
 export type { DialogButton } from "./dialog-core";
-import { showDialog } from "./dialog-core";
+import { showDialog, closeDialog } from "./dialog-core";
+import { ensureKatex, renderTex } from "../editor/math";
 
 export function linkDialog(href: string, text: string, hasSelection: boolean): Promise<{ href: string; text: string } | null> {
   return new Promise((resolve) => {
@@ -145,4 +146,59 @@ export function aboutDialog() {
     el("p", { style: { color: "var(--ui-muted)" } }, "Press Ctrl+/ for keyboard shortcuts."),
     el("p", { style: { color: "var(--ui-muted)", fontSize: "12px" } }, `Build ${__BUILD_INFO__}`),
   ), [{ label: "Close", primary: true }]);
+}
+
+/** Custom reading colours: paper and text, with a live sample. */
+export function readingColorsDialog(paper: string, text: string): Promise<{ paper: string; text: string } | null> {
+  return new Promise((resolve) => {
+    const bg = el("input", { type: "color", value: paper }) as HTMLInputElement;
+    const fg = el("input", { type: "color", value: text }) as HTMLInputElement;
+    const sample = el("div", { class: "reading-sample" }, "The quick brown fox jumps over the lazy dog. Çabuk kahverengi tilki tembel köpeğin üstünden atlar.");
+    const paint = () => { sample.style.background = bg.value; sample.style.color = fg.value; };
+    bg.addEventListener("input", paint); fg.addEventListener("input", paint); paint();
+    let done = false;
+    showDialog("Custom reading colours", el("div", null,
+      el("div", { class: "grid2" }, el("div", null, el("label", null, "Paper"), bg), el("div", null, el("label", null, "Text"), fg)),
+      sample,
+    ), [
+      { label: "Cancel" },
+      { label: "Apply", primary: true, action: () => { done = true; resolve({ paper: bg.value, text: fg.value }); } },
+    ], { onClose: () => { if (!done) resolve(null); } });
+  });
+}
+
+/** Edit a LaTeX formula with a live preview. Ctrl+Enter inserts; Enter makes a new line. */
+export function mathDialog(tex: string, display: boolean): Promise<{ tex: string; display: boolean } | null> {
+  return new Promise((resolve) => {
+    const input = el("textarea", { rows: "4", spellcheck: "false", placeholder: "e.g.  \\frac{a}{b} + \\sqrt{x^2 + y^2}", class: "math-src" }) as HTMLTextAreaElement;
+    input.value = tex;
+    const disp = el("input", { type: "checkbox" }) as HTMLInputElement;
+    disp.checked = display;
+    const preview = el("div", { class: "math-preview" });
+    const paint = () => {
+      const v = input.value.trim();
+      if (!v) { preview.textContent = "Preview"; preview.classList.add("empty"); return; }
+      preview.classList.remove("empty");
+      renderTex(preview, v, disp.checked);
+    };
+    let t = 0;
+    input.addEventListener("input", () => { clearTimeout(t); t = window.setTimeout(paint, 60); });
+    disp.addEventListener("change", paint);
+    let done = false;
+    const ok = () => { done = true; resolve({ tex: input.value, display: disp.checked }); };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); e.stopPropagation(); ok(); closeDialog(); }
+    });
+    ensureKatex().then(paint);
+    paint();
+    showDialog(tex ? "Edit equation" : "Insert equation", el("div", null,
+      el("label", null, "LaTeX"), input,
+      el("label", { class: "check" }, disp, " Display (centered on its own line)"),
+      preview,
+      el("div", { class: "hint" }, "Ctrl+Enter to insert. In Markdown files this is written as $…$ or $$…$$."),
+    ), [
+      { label: "Cancel" },
+      { label: tex ? "Update" : "Insert", primary: true, action: ok },
+    ], { onClose: () => { if (!done) resolve(null); }, width: "560px" });
+  });
 }

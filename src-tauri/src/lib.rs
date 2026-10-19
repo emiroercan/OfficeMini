@@ -287,6 +287,111 @@ fn harden_webview(win: &tauri::WebviewWindow) {
 #[cfg(not(any(windows, target_os = "linux")))]
 fn harden_webview(_win: &tauri::WebviewWindow) {}
 
+/// Write the window's printable content straight to a PDF file, no dialog. The frontend has
+/// already switched to the print layout (page view, 100%, light theme); `width_mm`/`height_mm`
+/// are the document's paper size and margins are zero (the pages carry their own margins).
+/// macOS has no silent path here: the frontend uses the print dialog's "Save as PDF" instead.
+#[tauri::command]
+async fn export_pdf(window: tauri::WebviewWindow, path: String, width_mm: f64, height_mm: f64) -> Result<(), String> {
+    if !(width_mm > 10.0 && height_mm > 10.0) {
+        return Err("invalid page size".into());
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    start_pdf_export(&window, path, width_mm, height_mm, tx)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(std::time::Duration::from_secs(180))
+            .unwrap_or_else(|_| Err("PDF export timed out".into()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(target_os = "linux")]
+thread_local! {
+    // WebKit's print operation must outlive the call that starts it; released when it finishes.
+    static PDF_OP: std::cell::RefCell<Option<webkit2gtk::PrintOperation>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(target_os = "linux")]
+fn start_pdf_export(window: &tauri::WebviewWindow, path: String, w: f64, h: f64, tx: std::sync::mpsc::Sender<Result<(), String>>) -> Result<(), String> {
+    window
+        .with_webview(move |wv| {
+            use webkit2gtk::{PrintOperation, PrintOperationExt};
+            let uri = match gtk::glib::filename_to_uri(&path, None) {
+                Ok(u) => u,
+                Err(e) => { let _ = tx.send(Err(e.to_string())); return; }
+            };
+            let op = PrintOperation::new(&wv.inner());
+            let settings = gtk::PrintSettings::new();
+            // GTK's file printer is named by a translated string; ask GTK's own catalogue for it.
+            settings.set_printer(gtk::glib::dgettext(Some("gtk30"), "Print to File").as_str());
+            settings.set(gtk::PRINT_SETTINGS_OUTPUT_FILE_FORMAT, Some("pdf"));
+            settings.set(gtk::PRINT_SETTINGS_OUTPUT_URI, Some(uri.as_str()));
+            let paper = gtk::PaperSize::new_custom("officemini", "OfficeMini", w, h, gtk::Unit::Mm);
+            settings.set_paper_size(&paper);
+            settings.set_orientation(gtk::PageOrientation::Portrait);
+            let setup = gtk::PageSetup::new();
+            setup.set_paper_size(&paper);
+            setup.set_orientation(gtk::PageOrientation::Portrait);
+            for set in [gtk::PageSetup::set_top_margin, gtk::PageSetup::set_bottom_margin, gtk::PageSetup::set_left_margin, gtk::PageSetup::set_right_margin] {
+                set(&setup, 0.0, gtk::Unit::Mm);
+            }
+            op.set_print_settings(&settings);
+            op.set_page_setup(&setup);
+            let fail_tx = tx.clone();
+            op.connect_failed(move |_, e| { let _ = fail_tx.send(Err(e.to_string())); });
+            op.connect_finished(move |_| {
+                let _ = tx.send(Ok(()));   // after `failed` this is ignored: the receiver takes the first
+                PDF_OP.with(|c| c.borrow_mut().take());
+            });
+            op.print();
+            PDF_OP.with(|c| *c.borrow_mut() = Some(op));
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn start_pdf_export(window: &tauri::WebviewWindow, path: String, w: f64, h: f64, tx: std::sync::mpsc::Sender<Result<(), String>>) -> Result<(), String> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Environment6, ICoreWebView2_7, COREWEBVIEW2_PRINT_ORIENTATION_PORTRAIT};
+    use webview2_com::PrintToPdfCompletedHandler;
+    use windows::core::{Interface, HSTRING};
+    window
+        .with_webview(move |webview| unsafe {
+            let run = || -> windows::core::Result<()> {
+                let core: ICoreWebView2_7 = webview.controller().CoreWebView2()?.cast()?;
+                let env: ICoreWebView2Environment6 = webview.environment().cast()?;
+                let ps = env.CreatePrintSettings()?;
+                ps.SetOrientation(COREWEBVIEW2_PRINT_ORIENTATION_PORTRAIT)?;
+                ps.SetPageWidth(w / 25.4)?;    // inches
+                ps.SetPageHeight(h / 25.4)?;
+                ps.SetMarginTop(0.0)?;
+                ps.SetMarginBottom(0.0)?;
+                ps.SetMarginLeft(0.0)?;
+                ps.SetMarginRight(0.0)?;
+                ps.SetScaleFactor(1.0)?;
+                ps.SetShouldPrintBackgrounds(true)?;
+                ps.SetShouldPrintHeaderAndFooter(false)?;
+                let done = tx.clone();
+                let handler = PrintToPdfCompletedHandler::create(Box::new(move |hr, ok| {
+                    let _ = done.send(match hr {
+                        Ok(()) if ok => Ok(()),
+                        Ok(()) => Err("the PDF could not be written".into()),
+                        Err(e) => Err(e.message().to_string()),
+                    });
+                    Ok(())
+                }));
+                core.PrintToPdf(&HSTRING::from(path.as_str()), &ps, &handler)
+            };
+            if let Err(e) = run() { let _ = tx.send(Err(e.message().to_string())); }
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn start_pdf_export(_window: &tauri::WebviewWindow, _path: String, _w: f64, _h: f64, _tx: std::sync::mpsc::Sender<Result<(), String>>) -> Result<(), String> {
+    Err("unsupported".into())
+}
+
 /// The label of the focused window, or of any window when none has focus.
 fn target_window(app: &AppHandle) -> Option<String> {
     let wins = app.webview_windows();
@@ -429,6 +534,7 @@ pub fn run() {
             delete_file,
             file_mtime,
             css_px_per_inch,
+            export_pdf,
             take_pending_opens,
             set_app_menu
         ])

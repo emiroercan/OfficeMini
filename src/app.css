@@ -439,3 +439,19 @@ html[data-theme="dark"] .page-hf img { filter: brightness(.92); }
   .om-img-wrap img { filter: none !important; background: none !important; box-shadow: none !important; }
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
+
+/* ---------------------------------------------------------------------------
+   LaTeX math (KaTeX). Formulas inherit the paragraph's color, so dark mode and the
+   Markdown reading themes apply to them too. */
+.om-math { display: inline-block; cursor: default; border-radius: 3px; padding: 0 1px; font-size: 1.1em; line-height: normal; text-indent: 0; }
+.om-math:hover { background: rgba(26,115,232,.07); }
+.om-math.om-math-display { display: inline-block; max-width: 100%; vertical-align: middle; padding: .3em 2px; }
+.om-math .katex-display { margin: 0; }
+.om-math .katex-error { font-family: Consolas, "DejaVu Sans Mono", monospace; font-size: .85em; }
+.dialog textarea.math-src { width: 100%; box-sizing: border-box; font-family: Consolas, "DejaVu Sans Mono", monospace; font-size: 13px; resize: vertical; }
+.dialog .math-preview { margin-top: 10px; min-height: 56px; padding: 10px; border: 1px solid var(--ui-border); border-radius: 6px; background: var(--ui-input); overflow-x: auto; display: flex; align-items: center; justify-content: center; font-size: 1.15em; }
+.dialog .math-preview.empty { color: var(--ui-muted); font-size: 12px; }
+.dialog label.check { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.dialog .hint { margin-top: 8px; color: var(--ui-muted); font-size: 12px; }
+@media print { .om-math:hover { background: none; } }
+.dialog .reading-sample { margin-top: 12px; padding: 14px 16px; border-radius: 6px; border: 1px solid var(--ui-border); font: 15px/1.5 "Noto Serif", Georgia, serif; }

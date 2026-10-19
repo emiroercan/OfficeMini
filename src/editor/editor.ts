@@ -35,6 +35,7 @@ import { buildKeymap, shortcuts, AppActions, Shortcut } from "./keymap";
 import { numberingPlugin } from "./lists";
 import { findPlugin } from "./find";
 import { paginationPlugin } from "./pagination";
+import { MathView } from "./math";
 import { ImageView } from "./nodeviews";
 import { normalizeHtml } from "../md/markdown";
 import { openExternal } from "../files";
@@ -190,6 +191,7 @@ export function createEditor(doc: PMNode, opts: EditorOptions): EditorHandle {
     attributes: { spellcheck: "true", class: "om-editor" },
     nodeViews: {
       image: (node, view, getPos) => new ImageView(node, view, getPos as () => number | undefined),
+      math: (node, view, getPos) => new MathView(node, view, getPos as () => number | undefined),
     },
     dispatchTransaction(tr) {
       const newState = view.state.apply(tr);
@@ -218,7 +220,10 @@ export function createEditor(doc: PMNode, opts: EditorOptions): EditorHandle {
 
 /** Force a full re-render (used when the theme changes: node styles are computed in toDOM). */
 export function redrawView(view: EditorView) {
-  view.setProps({ nodeViews: { image: (node, v, getPos) => new ImageView(node, v, getPos as () => number | undefined) } });
+  view.setProps({ nodeViews: {
+    image: (node, v, getPos) => new ImageView(node, v, getPos as () => number | undefined),
+    math: (node, v, getPos) => new MathView(node, v, getPos as () => number | undefined),
+  } });
 }
 
 /** Parse arbitrary HTML into a document fragment using the schema's parse rules. */

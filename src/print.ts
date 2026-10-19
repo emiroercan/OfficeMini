@@ -7,7 +7,15 @@ let styleEl: HTMLStyleElement | null = null;
 export function setPrintPageSize(sect: SectProps) {
   if (!styleEl) { styleEl = document.createElement("style"); styleEl.id = "print-page"; document.head.appendChild(styleEl); }
   const mm = (tw: number) => (tw / 1440) * 25.4;
-  styleEl.textContent = `@page { size: ${mm(sect.pgW).toFixed(2)}mm ${mm(sect.pgH).toFixed(2)}mm; margin: 0; }`;
+  const w = mm(sect.pgW).toFixed(2), h = mm(sect.pgH).toFixed(2);
+  // Everything printed must fit the paper width exactly: anything wider (the titlebar strip,
+  // the window-control overlay, the page-number gutter) makes WebKit and Chromium shrink the
+  // whole document to fit, and the pages then drift against the paper (0.89x on A4 here).
+  styleEl.textContent = `@page { size: ${w}mm ${h}mm; margin: 0; }
+@media print {
+  html, body, #app, #workspace, #pagearea { width: ${w}mm !important; min-width: 0 !important; max-width: ${w}mm !important; overflow: hidden !important; }
+  #doctitle, div[data-tauri-decorum-tb], .decorum-tb-btn { display: none !important; }
+}`;
 }
 
 /**

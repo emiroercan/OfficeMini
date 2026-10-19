@@ -8,6 +8,7 @@ import { goToNextCell, deleteTable } from "prosemirror-tables";
 import { EditorView } from "prosemirror-view";
 import * as C from "./commands";
 import { schema } from "../schema";
+import { insertMathCmd, editSelectedMath } from "./math";
 
 export const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
@@ -18,6 +19,7 @@ export interface AppActions {
   save(): void;
   saveAs(): void;
   print(): void;
+  exportPdf(): void;
   closeWindow(): void;
   find(): void;
   replace(): void;
@@ -87,6 +89,7 @@ export function shortcuts(actions: AppActions): Shortcut[] {
     { id: "save", keys: ["Mod-s"], label: "Save", group: "File", command: A("save") },
     { id: "saveas", keys: ["Mod-Shift-s"], label: "Save as…", group: "File", command: A("saveAs") },
     { id: "print", keys: ["Mod-p"], label: "Print…", group: "File", command: A("print") },
+    { id: "exportpdf", keys: ["Mod-Shift-e"], label: "Export as PDF…", group: "File", command: A("exportPdf") },
     { id: "close", keys: ["Mod-w", "Mod-q"], label: "Close window", group: "File", command: A("closeWindow") },
     // Edit
     { id: "undo", keys: ["Mod-z"], label: "Undo", group: "Edit", command: undo },
@@ -137,6 +140,7 @@ export function shortcuts(actions: AppActions): Shortcut[] {
     { id: "link", keys: ["Mod-k"], label: "Insert link…", group: "Insert", command: A("insertLink") },
     { id: "image", keys: ["Mod-Shift-i"], label: "Insert image…", group: "Insert", command: A("insertImage") },
     { id: "table", keys: ["Mod-Shift-t"], label: "Insert table…", group: "Insert", command: A("insertTable") },
+    { id: "equation", keys: ["Alt-="], label: "Insert equation (LaTeX)…", group: "Insert", command: insertMathCmd() },
     { id: "nbsp", keys: ["Mod-Shift-Space"], label: "Non-breaking space", group: "Insert", command: C.insertTextCmd(String.fromCharCode(0xa0)) },
     { id: "nbhyphen", keys: ["Mod-Shift--"], label: "Non-breaking hyphen", group: "Insert", command: C.insertTextCmd(String.fromCharCode(0x2011)) },
     // View
@@ -154,7 +158,7 @@ export function shortcuts(actions: AppActions): Shortcut[] {
     { id: "nextcell", keys: ["Tab"], label: "Next cell / indent list / insert tab", group: "Table", command: tabCommand(actions) },
     { id: "prevcell", keys: ["Shift-Tab"], label: "Previous cell / outdent list", group: "Table", command: shiftTabCommand() },
     // Editing keys
-    { id: "enter", keys: ["Enter"], label: "New paragraph", group: "Edit", command: C.splitParagraph, hidden: true },
+    { id: "enter", keys: ["Enter"], label: "New paragraph", group: "Edit", command: chainCommands(editSelectedMath, C.splitParagraph), hidden: true },
     { id: "backspace", keys: ["Backspace", "Mod-Backspace"], label: "Backspace", group: "Edit", hidden: true,
       command: chainCommands(C.backspaceListStart, deleteSelection, joinBackward, selectNodeBackward) },
     { id: "delete", keys: ["Delete", "Mod-Delete"], label: "Delete", group: "Edit", hidden: true,

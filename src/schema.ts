@@ -415,6 +415,36 @@ const tab: NodeSpec = {
 
 const text: NodeSpec = { group: "inline" };
 
+/**
+ * A LaTeX formula. `display` = block math, alone in a centered paragraph. `fence` remembers the
+ * Markdown spelling it came from ("$$", or a ```latex / ```math / ```tex code fence) so saving
+ * writes the file back the way it was written. The editor renders it with KaTeX (MathView);
+ * toDOM is the clipboard form.
+ */
+const math: NodeSpec = {
+  inline: true,
+  group: "inline",
+  marks: "_",
+  atom: true,
+  selectable: true,
+  draggable: false,
+  attrs: { tex: { default: "" }, display: { default: false }, fence: { default: null } },
+  leafText: (node) => (node.attrs.display ? `$$${node.attrs.tex}$$` : `$${node.attrs.tex}$`),
+  parseDOM: [{
+    tag: "[data-math]",
+    getAttrs: (dom) => {
+      const e = dom as HTMLElement;
+      return { tex: e.getAttribute("data-tex") || e.textContent || "", display: e.getAttribute("data-math") === "display", fence: e.getAttribute("data-fence") || null };
+    },
+  }],
+  toDOM(node) {
+    const a = node.attrs;
+    const attrs: Record<string, string> = { "data-math": a.display ? "display" : "inline", "data-tex": a.tex, class: "om-math" };
+    if (a.fence) attrs["data-fence"] = a.fence;
+    return ["span", attrs, a.display ? `$$${a.tex}$$` : `$${a.tex}$`];
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Marks
 
@@ -460,6 +490,7 @@ export const schema = new Schema({
     opaque_block,
     hard_break,
     tab,
+    math,
     text,
   },
   marks: { link, rpr },

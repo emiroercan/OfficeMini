@@ -137,11 +137,11 @@ export async function openDialog(filters: FileFilter[] = DOC_FILTERS, multiple =
   });
 }
 
-export async function saveDialog(defaultPath: string | null, filters: FileFilter[]): Promise<string | null> {
+export async function saveDialog(defaultPath: string | null, filters: FileFilter[], title = "Save document"): Promise<string | null> {
   if (isWeb && web.supported()) return web.saveDialog(defaultPath, filters);
   if (isTauri) {
     const { save } = await import("@tauri-apps/plugin-dialog");
-    const r = await save({ defaultPath: defaultPath || undefined, filters, title: "Save document" });
+    const r = await save({ defaultPath: defaultPath || undefined, filters, title });
     return r || null;
   }
   const name = prompt("Save as (file name)", defaultPath ? basename(defaultPath) : "document.docx");
@@ -225,6 +225,18 @@ export async function onBackendEvent<T = unknown>(name: string, cb: (payload: T)
   await w.listen<T>(name, (e) => cb(e.payload));
 }
 
+/**
+ * Silent PDF export (Linux: WebKit print-to-file, Windows: WebView2 PrintToPdf). False when the
+ * platform has no silent path (macOS, browser builds): the caller falls back to the print dialog.
+ */
+export function canExportPdfDirectly(): boolean {
+  return isTauri && !/Mac/.test(navigator.platform);
+}
+export async function exportPdf(path: string, widthMm: number, heightMm: number): Promise<void> {
+  const inv = await invoke();
+  await inv("export_pdf", { path, widthMm, heightMm });
+}
+
 export async function openInNewWindow(path?: string): Promise<void> {
   // A file handle belongs to the tab that was granted it, so a new tab cannot be handed the
   // path: it opens empty and the document is picked there instead.
@@ -246,6 +258,7 @@ export interface Settings {
   theme?: "light" | "dark";
   findOptions?: { caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean; preserveCase?: boolean };
   smartQuotes?: boolean;
+  reading?: import("./ui/reading").ReadingSettings;   // Markdown reading theme and font
   autosave?: boolean;
   autoUpdate?: boolean;   // quiet update check at startup (default on)
   scrollSpeed?: number;   // wheel/touchpad scroll multiplier (default 2 on Linux, 1 elsewhere)

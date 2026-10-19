@@ -428,6 +428,11 @@ export class DocxWriter {
         emit(`<w:r>${this.rPrFor(rm)}${this.imageXml(child)}</w:r>`);
       } else if (t === schema.nodes.textbox) {
         emit(`<w:r>${this.rPrFor(rm)}${this.textboxXml(child)}</w:r>`);
+      } else if (t === schema.nodes.math) {
+        // Word stores equations as OMML; until that converter exists the TeX source is kept as
+        // text, in the $…$ form Markdown uses, so nothing is lost when the file is reopened.
+        const a = child.attrs;
+        emit(`<w:r>${this.rPrFor(rm)}${this.textXml(a.display ? `$$${a.tex}$$` : `$${a.tex}$`)}</w:r>`);
       } else if (t === schema.nodes.opaque_inline) {
         emit(child.attrs.xml || "");
       }

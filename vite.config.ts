@@ -31,6 +31,21 @@ let commit = "";
 try { commit = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); } catch { /* not a git checkout */ }
 const buildInfo = `${commit || "local"}, ${new Date().toISOString().slice(0, 10)}`;
 
+/**
+ * KaTeX's stylesheet lists every math font as woff2, woff and ttf. All our webviews read woff2,
+ * so the other two are dropped instead of being copied into the bundle (~60 files -> 20).
+ */
+function katexWoff2Only(): Plugin {
+  return {
+    name: "katex-woff2-only",
+    enforce: "pre",
+    transform(code, id) {
+      if (!/katex(\.min)?\.css($|\?)/.test(id.replace(/\\/g, "/"))) return null;
+      return code.replace(/,\s*url\([^)]+\.woff\)\s*format\(["']woff["']\)/g, "").replace(/,\s*url\([^)]+\.ttf\)\s*format\(["']truetype["']\)/g, "");
+    },
+  };
+}
+
 /** `--mode ext`: copy the extension's static half (manifest, service worker, popup, icons) into dist-ext. */
 function extensionFiles(): Plugin {
   return {
@@ -69,7 +84,7 @@ export default defineConfig(({ mode }) => {
   // An extension page is loaded from chrome-extension://<id>/index.html, so its assets are
   // addressed relative to the page rather than from a server root.
   base: ext ? "./" : "/",
-  plugins: [devSave(), ...(ext ? [extensionFiles()] : [])],
+  plugins: [devSave(), katexWoff2Only(), ...(ext ? [extensionFiles()] : [])],
   define: { __APP_VERSION__: JSON.stringify(pkg.version), __BUILD_INFO__: JSON.stringify(buildInfo), __WEB_BUILD__: JSON.stringify(web) },
   server: {
     port: 1420,

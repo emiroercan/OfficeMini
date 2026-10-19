@@ -2424,7 +2424,7 @@ dependencies = [
 
 [[package]]
 name = "officemini"
-version = "0.3.12"
+version = "0.4.0"
 dependencies = [
  "gtk",
  "serde",
@@ -2436,6 +2436,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "webkit2gtk",
  "webview2-com",
  "windows 0.61.3",
 ]

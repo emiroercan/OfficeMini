@@ -1,5 +1,5 @@
 // Markdown <-> document, and HTML normalization used for paste and import.
-import { marked } from "marked";
+import { Marked } from "marked";
 import { Node as PMNode, DOMParser as PMDOMParser } from "prosemirror-model";
 import { schema } from "../schema";
 import { ctx } from "../docx/styles";
@@ -74,6 +74,24 @@ function rprJson(inl: Inline): string | null {
   return Object.keys(p).length ? JSON.stringify(p) : null;
 }
 
+/**
+ * A formula in HTML: our own markers (from Markdown or the clipboard), or KaTeX / MathJax /
+ * MathML output pasted from a web page, which carries the TeX source as an annotation.
+ */
+function mathOf(el: HTMLElement): { tex: string; display: boolean; block: boolean; fence: string | null } | null {
+  const kind = el.getAttribute("data-math");
+  if (kind) return { tex: el.getAttribute("data-tex") || "", display: kind === "display", block: el.tagName.toLowerCase() === "div", fence: el.getAttribute("data-fence") };
+  const cls = el.classList;
+  if (cls && (cls.contains("katex") || cls.contains("katex-display") || el.tagName.toLowerCase() === "math" || cls.contains("MathJax") || el.tagName.toLowerCase() === "mjx-container")) {
+    const ann = el.querySelector('annotation[encoding="application/x-tex"]');
+    const tex = ann?.textContent?.trim() || el.getAttribute("alttext") || "";
+    if (!tex) return null;
+    const display = cls.contains("katex-display") || !!el.querySelector(".katex-display") || el.getAttribute("display") === "block" || el.getAttribute("display") === "true";
+    return { tex, display, block: display, fence: null };
+  }
+  return null;
+}
+
 const BLOCK_TAGS = new Set(["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "ul", "ol", "blockquote", "pre", "table", "tr", "td", "th", "tbody", "thead", "tfoot", "section", "article", "header", "footer", "main", "nav", "aside", "hr", "figure", "figcaption", "dl", "dt", "dd", "address", "center"]);
 
 interface ListCtx { numId: number; level: number; }
@@ -136,6 +154,20 @@ export function normalizeHtml(html: string): string {
     const tag = el.tagName.toLowerCase();
     if (tag === "script" || tag === "style" || tag === "head" || tag === "meta" || tag === "title" || tag === "o:p") return;
     if (tag === "br") { ensurePara(paraAttrs).appendChild(src.createElement("br")); return; }
+    const math = mathOf(el);
+    if (math) {
+      const span = src.createElement("span");
+      span.setAttribute("data-math", math.display ? "display" : "inline");
+      span.setAttribute("data-tex", math.tex);
+      if (math.fence) span.setAttribute("data-fence", math.fence);
+      if (math.display && math.block) {
+        // Display math on its own: a centered paragraph holding just the formula.
+        endPara();
+        ensurePara({ "data-align": "center" }).appendChild(span);
+        endPara();
+      } else ensurePara(paraAttrs).appendChild(span);
+      return;
+    }
     if (tag === "img") {
       const s = el.getAttribute("src"); if (!s) return;
       const img = src.createElement("img");
@@ -240,8 +272,57 @@ export function normalizeHtml(html: string): string {
 // ---------------------------------------------------------------------------
 // Markdown -> document
 
-export function markdownToDoc(md: string): PMNode {
-  const html = marked.parse(md, { gfm: true, breaks: false }) as string;
+const escAttr = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const mathHtml = (tex: string, display: boolean, fence: string | null, block: boolean) =>
+  `<${block ? "div" : "span"} data-math="${display ? "display" : "inline"}" data-tex="${escAttr(tex)}"${fence ? ` data-fence="${escAttr(fence)}"` : ""}></${block ? "div" : "span"}>`;
+export const MATH_FENCES = ["latex", "math", "tex", "katex"];
+
+/**
+ * Markdown with LaTeX math, the way pandoc / GitHub / Obsidian write it:
+ * - `$…$` inline: no space just inside the dollars, and no digit right after the closing one,
+ *   so prices ("$5 and $10") stay text; `\$` is a literal dollar.
+ * - `$$…$$` display math, on its own lines or inside a paragraph.
+ * - fenced code blocks tagged latex / math / tex render as display math.
+ * `\[…\]` and `\(…\)` are deliberately not math: in Markdown they are escaped brackets.
+ */
+const md = new Marked({ gfm: true, breaks: false }, {
+  extensions: [
+    {
+      name: "blockMath",
+      level: "block",
+      start(src: string) { const i = src.search(/(^|\n)[ \t]{0,3}\$\$/); return i < 0 ? undefined : i + (src[i] === "\n" ? 1 : 0); },
+      tokenizer(src: string) {
+        const m = /^[ \t]{0,3}\$\$([\s\S]+?)\$\$[ \t]*(?:\n+|$)/.exec(src);
+        if (!m || !m[1].trim()) return undefined;
+        return { type: "blockMath", raw: m[0], tex: m[1].trim(), fence: /^\s*\n/.test(m[1]) ? "$$\n" : "$$" };
+      },
+      renderer(t: any) { return mathHtml(t.tex, true, t.fence, true); },
+    },
+    {
+      name: "inlineMath",
+      level: "inline",
+      start(src: string) { const i = src.indexOf("$"); return i < 0 ? undefined : i; },
+      tokenizer(src: string) {
+        let m = /^\$\$((?:\\[\s\S]|[^\\$])+?)\$\$/.exec(src);
+        if (m) return { type: "inlineMath", raw: m[0], tex: m[1].trim(), display: true };
+        m = /^\$(?![\s$])((?:\\[\s\S]|[^\\$\n]|\n(?!\s*\n))*?[^\s\\])\$(?!\d)/.exec(src) || /^\$([^\s$\\])\$(?!\d)/.exec(src);
+        if (m) return { type: "inlineMath", raw: m[0], tex: m[1], display: false };
+        return undefined;
+      },
+      renderer(t: any) { return mathHtml(t.tex, t.display, null, false); },
+    },
+  ],
+  renderer: {
+    code(this: unknown, t: any) {
+      const lang = String(t.lang || "").trim().toLowerCase();
+      if (!MATH_FENCES.includes(lang) || !String(t.text).trim()) return false;
+      return mathHtml(String(t.text).trim(), true, lang, true);
+    },
+  } as any,
+});
+
+export function markdownToDoc(src: string): PMNode {
+  const html = md.parse(src) as string;
   const norm = normalizeHtml(html);
   const dom = new DOMParser().parseFromString("<div>" + norm + "</div>", "text/html");
   const parser = PMDOMParser.fromSchema(schema);
@@ -261,8 +342,10 @@ function fmtEq(a: Fmt, b: Fmt): boolean {
   return a.b === b.b && a.i === b.i && a.code === b.code && a.strike === b.strike && a.u === b.u && a.mark === b.mark && a.sup === b.sup && a.sub === b.sub && a.size === b.size && a.color === b.color && a.link === b.link;
 }
 
+let escapeDollars = false;   // set per paragraph by docToMarkdown
 function escapeMd(s: string): string {
-  return s.replace(/([\\`*_{}\[\]<>#+!|~])/g, "\\$1").replace(/^(\s*)(\d+)\.(\s)/, "$1$2\\.$3").replace(/^(\s*)([-+])(\s)/, "$1\\$2$3");
+  s = s.replace(/([\\`*_{}\[\]<>#+!|~])/g, "\\$1").replace(/^(\s*)(\d+)\.(\s)/, "$1$2\\.$3").replace(/^(\s*)([-+])(\s)/, "$1\\$2$3");
+  return escapeDollars ? s.replace(/\$/g, "\\$") : s;
 }
 
 /** Wrap a segment: whitespace at the edges stays outside the markers so emphasis parses. */
@@ -322,7 +405,8 @@ export function docToMarkdown(doc: PMNode, resolveImage: (node: PMNode) => { nam
         const a = resolveImage(n);
         if (a) { assets.push(a); segs.push({ text: "", fmt: plain(), raw: `![${n.attrs.alt || n.attrs.name || ""}](${a.name})` }); }
         else if (/^https?:/.test(n.attrs.src)) segs.push({ text: "", fmt: plain(), raw: `![${n.attrs.alt || ""}](${n.attrs.src})` });
-      } else if (t === "opaque_inline") segs.push({ text: n.attrs.text || "", fmt: plain() });
+      } else if (t === "math") segs.push({ text: "", fmt: plain(), raw: n.attrs.display ? `$$${n.attrs.tex}$$` : `$${n.attrs.tex}$` });
+      else if (t === "opaque_inline") segs.push({ text: n.attrs.text || "", fmt: plain() });
       else if (t === "textbox") { n.forEach((b) => { if (b.type === schema.nodes.paragraph) segs.push(...segsOf(b), { text: " ", fmt: plain() }); }); }
     });
     // merge neighbours with identical formatting
@@ -335,7 +419,12 @@ export function docToMarkdown(doc: PMNode, resolveImage: (node: PMNode) => { nam
     return out;
   };
   const plain = (): Fmt => ({ b: false, i: false, code: false, strike: false, u: false, mark: false, sup: false, sub: false, size: null, color: null, link: null });
-  const inlineMd = (para: PMNode): string => segsOf(para).map(wrapSeg).join("");
+  const inlineMd = (para: PMNode): string => {
+    let dollars = 0;
+    para.forEach((n) => { if (n.isText) dollars += (n.text!.match(/\$/g) || []).length; });
+    escapeDollars = dollars >= 2;
+    try { return segsOf(para).map(wrapSeg).join(""); } finally { escapeDollars = false; }
+  };
   const codeLines = (para: PMNode): string[] => {
     const parts: string[] = [""];
     para.forEach((n) => { if (n.type.name === "hard_break") parts.push(""); else if (n.type.name === "tab") parts[parts.length - 1] += "\t"; else parts[parts.length - 1] += n.textContent; });
@@ -345,6 +434,17 @@ export function docToMarkdown(doc: PMNode, resolveImage: (node: PMNode) => { nam
   const blank = () => { if (lines.length && lines[lines.length - 1] !== "") lines.push(""); };
 
   const writePara = (p: PMNode) => {
+    // A paragraph holding only a display formula is a math block.
+    if (p.childCount === 1 && p.firstChild!.type === schema.nodes.math && p.firstChild!.attrs.display && !paragraphStyle(p).pPr.numId) {
+      const { tex, fence } = p.firstChild!.attrs;
+      blank();
+      blockLines.push(lines.length);
+      prevKind = "other";
+      if (fence && MATH_FENCES.includes(fence)) lines.push("```" + fence, ...String(tex).split("\n"), "```");
+      else if (fence === "$$" && !String(tex).includes("\n")) lines.push(`$$${tex}$$`);
+      else lines.push("$$", ...String(tex).split("\n"), "$$");
+      return;
+    }
     const eff = paragraphStyle(p).pPr;
     const style = (eff.pStyle || "").toLowerCase();
     const hm = /heading\s?(\d)/.exec(style) || /^(?:başlık|titre|überschrift)\s?(\d)/.exec(style);

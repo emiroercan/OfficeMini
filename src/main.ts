@@ -23,10 +23,13 @@ import { buildToolbar, ToolbarHandle, colorPopup } from "./ui/toolbar";
 import { buildStatusbar, StatusHandle } from "./ui/statusbar";
 import { el, showMenu, MenuItem, tooltip, closeAllPopups, icon } from "./ui/widgets";
 import { installNativeMenu, refreshNativeMenu, MenuSpec } from "./native-menu";
-import { showDialog, linkDialog, tableDialog, pageSetupDialog, paragraphDialog, goToPageDialog, shortcutsDialog, aboutDialog, closeDialog } from "./ui/dialogs";
+import { showDialog, linkDialog, tableDialog, pageSetupDialog, paragraphDialog, goToPageDialog, shortcutsDialog, aboutDialog, closeDialog, mathDialog, readingColorsDialog, promptDialog } from "./ui/dialogs";
 import { imageSize } from "./docx/images";
 import { twipsToPx } from "./docx/units";
 import { setPrintPageSize, printDocument } from "./print";
+import { ensureKatex, docHasMath, onMathReady, setMathDialog, insertMathCmd } from "./editor/math";
+import { applyReading, READING_THEMES, READING_FONTS, ReadingSettings } from "./ui/reading";
+import { isDarkMode } from "./docx/props";
 import { checkForUpdates } from "./updater";
 import * as F from "./files";
 
@@ -52,6 +55,7 @@ const app = {
   status: null as StatusHandle | null,
   shown: false,
   loading: false,
+  printing: false,
 };
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -91,6 +95,9 @@ function installDocument(loaded: LoadedDoc, doc: PMNode, path: string | null, ki
   app.loaded = loaded;
   app.path = path;
   app.kind = kind;
+  // Markdown and Word documents can have different paper (reading theme): settle it before render.
+  const dark = paperIsDark();
+  if (dark !== isDarkMode()) { setDarkMode(dark); clearCssCaches(); }
   resetHeaderFooterCache();
   setHeaderFooters({ headers: loaded.headers, footers: loaded.footers });
   setDefaultTabStop(loaded.ctx.defaultTabStop);
@@ -300,6 +307,8 @@ async function openPath(path: string) {
       const blank = await loadBlank();
       const text = new TextDecoder("utf-8").decode(bytes);
       const doc = ext === "txt" ? textToDoc(text) : markdownToDoc(text);
+      // Formulas are typeset before the first paint, so the page layout does not jump.
+      if (docHasMath(doc)) await ensureKatex();
       if (app.source) { app.source = false; $("workspace").classList.remove("source"); }
       installDocument(blank, doc, path, "md");
       if (ext !== "txt") await resolveRelativeImages(F.dirname(path));
@@ -502,10 +511,44 @@ function toggleMarks() {
 }
 
 /** Switch the colour theme. Document colours are computed in toDOM, so the view is redrawn. */
+/**
+ * Paper look for the current document: the app theme, or for Markdown the reading theme and
+ * font. Returns whether the paper is dark (document colours are then remapped for it).
+ */
+function paperIsDark(): boolean {
+  const md = app.kind === "md";
+  return applyReading(app.settings.reading, { colors: md && !app.printing, font: md }, app.theme === "dark");
+}
+
+function setReading(patch: Partial<ReadingSettings>) {
+  app.settings.reading = { ...(app.settings.reading || {}), ...patch };
+  F.saveSettings(app.settings);
+  repaintDocument();
+}
+
+async function customReadingColors() {
+  const cur = app.settings.reading?.custom || { paper: "#f4ecd8", text: "#5b4636" };
+  const res = await readingColorsDialog(cur.paper, cur.text);
+  if (res) setReading({ theme: "custom", custom: res });
+}
+
+async function customReadingFont() {
+  const cur = app.settings.reading?.font;
+  const preset = READING_FONTS.some((f) => f.id === cur);
+  const name = await promptDialog("Reading font", "Font name (any installed font)", preset ? "" : cur || "", "e.g. Literata, Merriweather, Inter");
+  if (name && name.trim()) setReading({ font: name.trim() });
+}
+
 function setTheme(theme: "light" | "dark", persist = true) {
   app.theme = theme;
   document.documentElement.setAttribute("data-theme", theme);
-  setDarkMode(theme === "dark");
+  repaintDocument();
+  if (persist) { app.settings.theme = theme; F.saveSettings(app.settings); }
+}
+
+/** Re-render the document after a change of paper colours or reading font. */
+function repaintDocument() {
+  setDarkMode(paperIsDark());
   clearCssCaches(); // run styles are cached per mark and depend on the theme
   if (app.handle) {
     redrawView(view());
@@ -516,7 +559,6 @@ function setTheme(theme: "light" | "dark", persist = true) {
     view().dispatch(view().state.tr.setMeta(numberingKey, "refresh").setMeta("addToHistory", false));
     relayout(view());
   }
-  if (persist) { app.settings.theme = theme; F.saveSettings(app.settings); }
 }
 function toggleTheme() { setTheme(app.theme === "dark" ? "light" : "dark"); }
 
@@ -768,22 +810,61 @@ function cellShadingPopup() {
 // ---------------------------------------------------------------------------
 // Printing
 
-async function print() {
+/** Switch to the print layout (page view, 100%, light paper); returns the function that undoes it. */
+async function enterPrintLayout(): Promise<() => void> {
   const prevMode = app.mode, prevZoom = app.zoom, prevTheme = app.theme;
   if (app.source) leaveSourceView();
-  await printDocument(async () => {
-    closeAllPopups();
-    if (app.theme !== "light") setTheme("light", false);
-    if (app.mode !== "page") setMode("page");
-    if (app.zoom !== 1) setZoom(1);
-    setPrintPageSize(view().state.doc.attrs.sect as SectProps);
-    relayout(view());
-    await new Promise((r) => setTimeout(r, 160));
-  }, () => {
+  closeAllPopups();
+  // Formulas must be typeset (and their fonts loaded) before the pages are laid out.
+  if (docHasMath(view().state.doc)) await ensureKatex();
+  app.printing = true;   // reading colours off: print on white paper
+  if (app.theme !== "light") setTheme("light", false);
+  else if (app.kind === "md" && app.settings.reading?.theme && app.settings.reading.theme !== "auto") repaintDocument();
+  if (app.mode !== "page") setMode("page");
+  if (app.zoom !== 1) setZoom(1);
+  document.documentElement.classList.add("printing");
+  setPrintPageSize(view().state.doc.attrs.sect as SectProps);
+  relayout(view());
+  await document.fonts.ready;
+  await new Promise((r) => setTimeout(r, 160));
+  return () => {
+    document.documentElement.classList.remove("printing");
+    app.printing = false;
     if (prevTheme !== app.theme) setTheme(prevTheme, false);
+    else if (app.kind === "md" && app.settings.reading?.theme && app.settings.reading.theme !== "auto") repaintDocument();
     if (prevMode !== app.mode) setMode(prevMode);
     if (prevZoom !== app.zoom) setZoom(prevZoom);
-  });
+  };
+}
+
+async function print() {
+  let restore = () => {};
+  await printDocument(async () => { restore = await enterPrintLayout(); }, () => restore());
+}
+
+/** File > Export as PDF: the same pages as printing, written straight to a file. */
+async function exportPdf(to?: string) {
+  if (!F.canExportPdfDirectly()) { await print(); return; }   // macOS: the print dialog has "Save as PDF"
+  const base = app.path ? F.basename(app.path).replace(/\.[^.]+$/, "") : docName().replace(/\.[^.]+$/, "") || "Document";
+  const dir = app.path ? F.dirname(app.path) : null;
+  const suggested = dir ? F.joinPath(dir, base + ".pdf") : base + ".pdf";
+  let target = to || await F.saveDialog(suggested, [{ name: "PDF", extensions: ["pdf"] }], "Export as PDF");
+  if (!target) return;
+  if (!/\.pdf$/i.test(target)) target += ".pdf";
+  const t0 = performance.now();
+  const restore = await enterPrintLayout();
+  try {
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const sect = view().state.doc.attrs.sect as SectProps;
+    const mm = (tw: number) => (tw / 1440) * 25.4;
+    await F.exportPdf(target, mm(sect.pgW), mm(sect.pgH));
+    app.status?.flash(`Exported ${F.basename(target)} in ${Math.round(performance.now() - t0)} ms`);
+  } catch (e) {
+    console.error(e);
+    await F.showMessage("Could not export the PDF.\n\n" + String((e as Error)?.message || e), "OfficeMini", "error");
+  } finally {
+    restore();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -958,6 +1039,7 @@ const actions: ContextActions = {
   save: () => { save(); },
   saveAs: () => { saveAs(); },
   print: () => { print(); },
+  exportPdf: () => { exportPdf(); },
   closeWindow: () => { closeWindowRequest(); },
   find: () => showFind(false),
   replace: () => showFind(true),
@@ -1032,6 +1114,7 @@ function buildMenubar() {
       { label: "Save as…", key: key("saveas"), action: () => saveAs() },
       { sep: true },
       { label: "Page setup…", action: () => showPageSetup() },
+      { label: "Export as PDF…", key: key("exportpdf"), action: () => exportPdf() },
       { label: "Print…", key: key("print"), action: () => print() },
       { sep: true },
       { label: "Close window", key: key("close"), action: () => closeWindowRequest() },
@@ -1064,6 +1147,18 @@ function buildMenubar() {
       { label: "Scroll speed", submenu: SCROLL_SPEEDS.map(([name, f]) => ({ label: `${name} (${f}×)`, checked: scrollSpeed() === f, action: () => { app.settings.scrollSpeed = f; F.saveSettings(app.settings); } })) },
       { sep: true },
       { label: "Dark mode", key: key("theme"), checked: app.theme === "dark", action: () => toggleTheme() },
+      { label: "Reading theme (Markdown)", submenu: [
+        { label: "Follow app theme", checked: !app.settings.reading?.theme || app.settings.reading.theme === "auto", action: () => setReading({ theme: "auto" }) },
+        { sep: true },
+        ...READING_THEMES.map((t) => ({ label: t.name, checked: app.settings.reading?.theme === t.id, action: () => setReading({ theme: t.id }) })),
+        { sep: true },
+        { label: "Custom colours…", checked: app.settings.reading?.theme === "custom", action: () => { customReadingColors(); } },
+      ] },
+      { label: "Reading font (Markdown)", submenu: [
+        ...READING_FONTS.map((f) => ({ label: f.name, checked: (app.settings.reading?.font || "document") === f.id, action: () => setReading({ font: f.id }) })),
+        { sep: true },
+        { label: (() => { const c = app.settings.reading?.font; return c && !READING_FONTS.some((f) => f.id === c) ? `Other font: ${c}…` : "Other font…"; })(), checked: !!app.settings.reading?.font && !READING_FONTS.some((f) => f.id === app.settings.reading?.font), action: () => { customReadingFont(); } },
+      ] },
       { label: "Markdown source", key: key("source"), checked: app.source, disabled: app.kind !== "md" && !app.source, action: () => toggleSourceView() },
       { sep: true },
       { label: "Formatting marks", key: key("marks"), checked: app.showMarks, action: () => toggleMarks() },
@@ -1074,6 +1169,7 @@ function buildMenubar() {
       { label: "Image…", key: key("image"), action: () => insertImageFile() },
       { label: "Table…", key: key("table"), action: () => insertTableDialog() },
       { label: "Link…", key: key("link"), action: () => insertLink() },
+      { label: "Equation (LaTeX)…", key: key("equation"), action: () => run(insertMathCmd()) },
       { sep: true },
       { label: "Page break", key: key("pagebreak"), action: () => run(C.insertPageBreak) },
       { label: "Line break", key: key("linebreak"), action: () => run(C.insertLineBreak) },
@@ -1333,6 +1429,9 @@ async function boot() {
     onContextMenu: (v, e) => showContextMenu(v, e, actions, app.shortcuts),
   });
   app.handle = handle;
+  setMathDialog(mathDialog);
+  // KaTeX loads on first use; formulas painted before that get their real size afterwards.
+  onMathReady(() => { if (app.handle) relayout(view()); });
   app.shortcuts = handle.shortcuts;
   let lastDoc = handle.view.state.doc;
   if (app.mode !== "page") setViewMode(handle.view, app.mode);
@@ -1407,6 +1506,15 @@ function devBenchChannel() {
       if (!(await F.fileExists(trig))) return;
       const req = JSON.parse(await F.readTextFile(trig));
       await F.deleteFile(trig);
+      if (req.open) { await openPath(req.open); await new Promise((r) => setTimeout(r, 800)); }
+      if (req.exportPdf) {
+        const t0 = performance.now();
+        await exportPdf(req.exportPdf);
+        let math = 0; view().state.doc.descendants((n) => { if (n.type === schema.nodes.math) math++; });
+        const res = { label: req.label || "", exportMs: Math.round(performance.now() - t0), math, rendered: document.querySelectorAll(".om-math .katex").length, ua: navigator.userAgent };
+        await F.writeFile(F.joinPath(dir, "bench.result.json"), new TextEncoder().encode(JSON.stringify(res)));
+        return;
+      }
       const ws = $("workspace");
       let styleEl: HTMLStyleElement | null = null;
       if (req.css) { styleEl = document.createElement("style"); styleEl.textContent = req.css; document.head.appendChild(styleEl); }
