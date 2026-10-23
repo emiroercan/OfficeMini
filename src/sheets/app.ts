@@ -1163,14 +1163,15 @@ function tableRange(): Range {
 }
 
 /**
- * Range a sort works on. Sorting moves whole rows: a selection narrower than its table (say column
- * A, rows 1-9999, of a table spanning A:K) is widened to the table's full width for the selected
- * rows, like Excel's "Expand the selection" - sorting one column on its own tears every row apart
- * (and leaves the moved formulas pointing at the wrong rows). The table is the data block around
- * the selection, so a column with a header but no data yet comes along, while a separate table
- * beyond a blank column is left alone. An active filter's range wins; a single cell sorts its block.
+ * Range a row-wise operation (sort, remove duplicates) works on. Rows move whole: a selection
+ * narrower than its table (say column A, rows 1-9999, of a table spanning A:K) is widened to the
+ * table's full width for the selected rows, like Excel's "Expand the selection" - moving one column
+ * on its own tears every row apart (and leaves moved formulas pointing at the wrong rows). The
+ * table is the data block around the selection, so a column with a header but no data yet comes
+ * along, while a separate table beyond a blank column is left alone. An active filter's range wins;
+ * a single cell uses its block. selectionOnlyRange() is the opt-out ("only the selected cells").
  */
-function sortRange(): Range {
+function rowTableRange(): Range {
   const s = sheet();
   const a = grid().selection.active;
   const rg = rawSel();
@@ -1188,31 +1189,78 @@ function sortRange(): Range {
   return { r1: sel.r1, c1: Math.min(sel.c1, block.c1), r2: sel.r2, c2: Math.max(sel.c2, block.c2) };
 }
 
+/**
+ * The selection on its own, for "only the selected cells" - null when that would be the same as
+ * the whole-row range (a single cell, or a selection already as wide as its table).
+ */
+function selectionOnlyRange(): Range | null {
+  const rg = rawSel();
+  if (rg.r1 === rg.r2 && rg.c1 === rg.c2) return null;
+  const sel = boundRange(sheet(), rg);
+  const wide = rowTableRange();
+  return sel.c1 === wide.c1 && sel.c2 === wide.c2 ? null : sel;
+}
+
 function sortBy(col: number, ascending: boolean, range?: Range, header?: boolean) {
-  const rg = range || sortRange();
+  const rg = range || rowTableRange();
   const hasHeader = header ?? (!!sheet().autoFilter && sheet().autoFilter!.r1 === rg.r1 || looksLikeHeader(sheet(), rg));
   const ch = sortChanges(sheet(), rg, col, ascending, hasHeader);
   if (!ch.length) { flash("Already sorted"); return; }
   applyChanges(ch, ascending ? "Sort A → Z" : "Sort Z → A");
   grid().setRanges([rg], { r: rg.r1, c: col });
-  flash(`Sorted ${rangeRefShort(rg)} by column ${colName(col)} - whole rows`);
+  flash(`Sorted ${rangeRefShort(rg)} by column ${colName(col)}`);
+}
+
+/** Sort entries shared by the toolbar, the Data menu and the cell menu. */
+function sortItems(): MenuItem[] {
+  const c = grid().selection.active.c;
+  const rg = rawSel();
+  // Cheap check (menus are rebuilt often, e.g. for the macOS menu bar); the action re-reads the selection.
+  const multi = rg.r1 !== rg.r2 || rg.c1 !== rg.c2;
+  const only = (asc: boolean) => () => sortBy(c, asc, boundRange(sheet(), rawSel()));
+  return [
+    { label: "Sort range A → Z", action: () => sortBy(c, true) },
+    { label: "Sort range Z → A", action: () => sortBy(c, false) },
+    ...(multi ? [
+      { label: "Sort selection only A → Z", action: only(true) },
+      { label: "Sort selection only Z → A", action: only(false) },
+    ] : []),
+    { label: "Sort range…", action: () => sortDialog() },
+  ];
 }
 
 async function sortDialog() {
-  const rg = sortRange();
   const s = sheet();
-  const hasHeader = looksLikeHeader(s, rg) || (!!s.autoFilter && s.autoFilter.r1 === rg.r1);
-  const cols: { c: number; label: string }[] = [];
-  for (let c = rg.c1; c <= rg.c2; c++) { const t = hasHeader ? displayOf(s.cells.get(key(rg.r1, c)), styles()) : ""; cols.push({ c, label: `${colName(c)}${t ? " - " + t : ""}` }); }
-  const colSel = el("select", null, ...cols.map((x) => el("option", { value: String(x.c) }, x.label)));
-  colSel.value = String(Math.max(rg.c1, Math.min(rg.c2, grid().selection.active.c)));
+  const wide = rowTableRange();
+  const narrow = selectionOnlyRange();
+  let rg = wide;
+  const headerCb = el("input", { type: "checkbox" });
+  headerCb.checked = looksLikeHeader(s, wide) || (!!s.autoFilter && s.autoFilter.r1 === wide.r1);
+  const what = el("p", { style: { color: "var(--ui-muted)", margin: "0 0 8px" } });
+  const colSel = el("select", null);
+  const col2 = el("select", null);
   const dirSel = el("select", null, el("option", { value: "asc" }, "A → Z (ascending)"), el("option", { value: "desc" }, "Z → A (descending)"));
-  const headerCb = el("input", { type: "checkbox" }); headerCb.checked = hasHeader;
-  const col2 = el("select", null, el("option", { value: "-1" }, "(none)"), ...cols.map((x) => el("option", { value: String(x.c) }, x.label)));
   const dir2 = el("select", null, el("option", { value: "asc" }, "A → Z"), el("option", { value: "desc" }, "Z → A"));
+  // Column choices follow the range being sorted (whole rows, or only the selected cells).
+  const fill = () => {
+    const options = () => { const out: HTMLElement[] = []; for (let c = rg.c1; c <= rg.c2; c++) { const t = headerCb.checked ? displayOf(s.cells.get(key(rg.r1, c)), styles()) : ""; out.push(el("option", { value: String(c) }, `${colName(c)}${t ? " - " + t : ""}`)); } return out; };
+    const p1 = parseInt(colSel.value, 10), p2 = parseInt(col2.value, 10), a = grid().selection.active.c;
+    const inR = (c: number) => c >= rg.c1 && c <= rg.c2;
+    colSel.replaceChildren(...options());
+    col2.replaceChildren(el("option", { value: "-1" }, "(none)"), ...options());
+    colSel.value = String(inR(p1) ? p1 : inR(a) ? a : rg.c1);
+    col2.value = String(inR(p2) ? p2 : -1);
+    what.textContent = `Sort ${rangeRefShort(rg)}`;
+  };
+  fill();
+  headerCb.addEventListener("change", fill);
+  const onlyCb = el("input", { type: "checkbox" });
+  onlyCb.addEventListener("change", () => { rg = onlyCb.checked && narrow ? narrow : wide; fill(); });
+  const line = (input: HTMLElement, text: string) => el("label", { style: { display: "flex", alignItems: "center", gap: "6px", color: "var(--ui-fg)", margin: "4px 0" } }, input, text);
   const body = el("div", null,
-    el("p", { style: { color: "var(--ui-muted)", margin: "0 0 8px" } }, `Sort ${rangeRefShort(rg)}`),
-    el("label", { style: { display: "flex", alignItems: "center", gap: "6px", color: "var(--ui-fg)" } }, headerCb, "Data has a header row"),
+    what,
+    line(headerCb, "Data has a header row"),
+    ...(narrow ? [line(onlyCb, "Sort only the selected cells (the rest of each row stays put)")] : []),
     el("div", { class: "grid2", style: { marginTop: "8px" } }, el("label", null, "Sort by"), colSel, el("label", null, "Order"), dirSel, el("label", null, "Then by"), col2, el("label", null, "Order"), dir2));
   showDialog("Sort range", body, [
     { label: "Cancel" },
@@ -1295,31 +1343,88 @@ function filterPopup(c: number, r: number, x: number, y: number) {
   showFilterPopup({ sheet: s, col: c, styles: styles(), x, y, header, firstDataRow: s.autoFilter!.r1 + 1, test: formulaRowTest(), onApply: () => { grid().invalidate(); updateStatus(); const n = s.hiddenRowsByFilter.size; flash(n ? `${n} row${n === 1 ? "" : "s"} hidden by filter` : "Showing all rows"); }, onSort: (asc) => sortBy(c, asc, boundRange(s, s.autoFilter!), true) });
 }
 
-function removeDuplicates() {
-  const rg = tableRange();
+/**
+ * Remove duplicates. You pick which columns make a row a duplicate (Excel's checklist; the selected
+ * columns are ticked when the selection is narrower than the table, else all of them) and what goes:
+ * the whole duplicate rows (the default - the table closes up, rows stay intact), or only the cells
+ * of the ticked columns (a unique list in those columns; the rest of each row stays put). It works on
+ * the same whole-row range as sorting. Rows empty in every ticked column are kept by default, so
+ * e.g. de-duplicating customers by e-mail doesn't throw away everyone without an e-mail.
+ */
+function removeDuplicatesDialog() {
   const s = sheet();
-  const hasHeader = looksLikeHeader(s, rg) || (!!s.autoFilter && s.autoFilter.r1 === rg.r1);
+  const rg = rowTableRange();
+  const narrow = selectionOnlyRange();
+  const line = (input: HTMLElement, text: string | HTMLElement) => el("label", { style: { display: "flex", alignItems: "center", gap: "6px", color: "var(--ui-fg)", margin: "3px 0" } }, input, text);
+  const headerCb = el("input", { type: "checkbox" });
+  headerCb.checked = looksLikeHeader(s, rg) || (!!s.autoFilter && s.autoFilter.r1 === rg.r1);
+  const name = (c: number) => { const t = headerCb.checked ? displayOf(s.cells.get(key(rg.r1, c)), styles()) : ""; return `${colName(c)}${t ? " - " + t : ""}`; };
+  const list = el("div", { style: { maxHeight: "200px", overflow: "auto", border: "1px solid var(--ui-border)", borderRadius: "4px", padding: "2px 8px", margin: "4px 0 8px" } });
+  const boxes: { c: number; cb: HTMLInputElement; text: HTMLElement }[] = [];
+  for (let c = rg.c1; c <= rg.c2; c++) {
+    const cb = el("input", { type: "checkbox" });
+    cb.checked = narrow ? c >= narrow.c1 && c <= narrow.c2 : true;
+    const text = el("span", null, name(c));
+    list.appendChild(line(cb, text));
+    boxes.push({ c, cb, text });
+  }
+  headerCb.addEventListener("change", () => { for (const b of boxes) b.text.textContent = name(b.c); });
+  const setAll = (on: boolean) => { for (const b of boxes) b.cb.checked = on; };
+  const allBtn = el("button", { type: "button" }, "All"); allBtn.addEventListener("click", () => setAll(true));
+  const noneBtn = el("button", { type: "button" }, "None"); noneBtn.addEventListener("click", () => setAll(false));
+  const wholeRb = el("input", { type: "radio", name: "om-dup-mode" }); wholeRb.checked = true;
+  const onlyRb = el("input", { type: "radio", name: "om-dup-mode" });
+  const blankCb = el("input", { type: "checkbox" }); blankCb.checked = true;
+  const body = el("div", null,
+    el("p", { style: { color: "var(--ui-muted)", margin: "0 0 8px" } }, `Remove duplicates in ${rangeRefShort(rg)}`),
+    line(headerCb, "Data has a header row"),
+    el("div", { style: { display: "flex", alignItems: "center", gap: "6px", marginTop: "10px" } }, el("span", { style: { flex: "1", color: "var(--ui-muted)" } }, "A row is a duplicate when these columns match:"), allBtn, noneBtn),
+    list,
+    line(wholeRb, "Remove the whole duplicate rows"),
+    line(onlyRb, "Only in the ticked columns (the rest of each row stays put)"),
+    line(blankCb, "Keep rows that are empty in the ticked columns"));
+  showDialog("Remove duplicates", body, [
+    { label: "Cancel" },
+    { label: "Remove", primary: true, action: () => {
+      const cols = boxes.filter((b) => b.cb.checked).map((b) => b.c);
+      if (!cols.length) { flash("Tick at least one column to compare"); return false; }
+      const all: number[] = [];
+      for (let c = rg.c1; c <= rg.c2; c++) all.push(c);
+      removeDuplicatesIn(rg, headerCb.checked, cols, wholeRb.checked ? all : cols, blankCb.checked);
+    } },
+  ], { width: "460px" });
+}
+
+/** Rows of `rg` whose `compare` columns repeat an earlier row are removed; `move` columns close up. */
+function removeDuplicatesIn(rg: Range, hasHeader: boolean, compare: number[], move: number[], keepBlank: boolean) {
+  const s = sheet();
   const seen = new Set<string>();
   const keep: number[] = [];
   let removed = 0;
   // Only the rows that can be seen are compared and closed up; filtered-out rows stay put.
   const rows = visibleRows(s, rg.r1 + (hasHeader ? 1 : 0), rg.r2);
   for (const r of rows) {
-    const sig: string[] = [];
-    for (let c = rg.c1; c <= rg.c2; c++) { const v = s.cells.get(key(r, c))?.v ?? null; sig.push(v === null ? "" : typeof v === "string" ? "s" + v.toLocaleLowerCase("tr") : typeof v + ":" + String(isError(v) ? v.e : v)); }
-    const k = sig.join("\u0001");
+    let blank = true;
+    const k = compare.map((c) => {
+      const v = s.cells.get(key(r, c))?.v ?? null;
+      if (v !== null && v !== "") blank = false;
+      return v === null ? "" : typeof v === "string" ? "s" + v.toLocaleLowerCase("tr") : typeof v + ":" + String(isError(v) ? v.e : v);
+    }).join("\u0001");
+    if (blank && keepBlank) { keep.push(r); continue; }
     if (seen.has(k)) { removed++; continue; }
     seen.add(k); keep.push(r);
   }
-  if (!removed) { flash("No duplicate rows found"); return; }
+  const whole = move.length === rg.c2 - rg.c1 + 1;
+  if (!removed) { flash(whole ? "No duplicate rows found" : "No duplicates found"); return; }
   const changes: CellChange[] = [];
   keep.forEach((r, i) => {
     const target = rows[i];
-    if (r !== target) for (let c = rg.c1; c <= rg.c2; c++) { const cell = s.cells.get(key(r, c)); changes.push({ r: target, c, cell: cell ? movedCell(cell, target - r) : null }); }
+    if (r !== target) for (const c of move) { const cell = s.cells.get(key(r, c)); changes.push({ r: target, c, cell: cell ? movedCell(cell, target - r) : null }); }
   });
-  for (const r of rows.slice(keep.length)) for (let c = rg.c1; c <= rg.c2; c++) if (s.cells.has(key(r, c))) changes.push({ r, c, cell: null });
+  for (const r of rows.slice(keep.length)) for (const c of move) if (s.cells.has(key(r, c))) changes.push({ r, c, cell: null });
   applyChanges(changes, "Remove duplicates");
-  flash(`${removed} duplicate row${removed === 1 ? "" : "s"} removed`);
+  const where = whole ? "" : ` from column${move.length === 1 ? "" : "s"} ${move.map((c) => colName(c)).join(", ")}`;
+  flash(`${removed} duplicate${whole ? " row" : ""}${removed === 1 ? "" : "s"} removed${where}`);
 }
 
 function trimWhitespace() {
@@ -1977,9 +2082,7 @@ function showContextMenu(e: MouseEvent, hit: Hit) {
     { label: link ? "Edit link…" : "Insert link…", key: `${MOD}+K`, action: () => insertLink() },
     ...(link ? [{ label: "Open link", action: () => openLink(link) }] : []),
     { sep: true },
-    { label: "Sort range A → Z", action: () => sortBy(grid().selection.active.c, true) },
-    { label: "Sort range Z → A", action: () => sortBy(grid().selection.active.c, false) },
-    { label: "Sort range…", action: () => sortDialog() },
+    ...sortItems(),
     { label: s.autoFilter ? "Remove filter" : "Create a filter", key: `${MOD}+Shift+L`, action: () => toggleFilter() },
     { sep: true },
     { label: merged ? "Unmerge cells" : "Merge cells", action: () => toggleMerge() },
@@ -2108,9 +2211,7 @@ function buildMenubar() {
       ];
     } },
     { title: "Data", alt: "d", items: () => [
-      { label: "Sort range A → Z", action: () => sortBy(grid().selection.active.c, true) },
-      { label: "Sort range Z → A", action: () => sortBy(grid().selection.active.c, false) },
-      { label: "Sort range…", action: () => sortDialog() },
+      ...sortItems(),
       { sep: true },
       { label: sheet().autoFilter ? "Remove filter" : "Create a filter", key: `${MOD}+Shift+L`, action: () => toggleFilter() },
       { label: "Reapply filter", action: () => { reapplyFilter(); grid().invalidate(); updateStatus(); const n = sheet().hiddenRowsByFilter.size; flash(n ? `${n} row${n === 1 ? "" : "s"} hidden by filter` : "Showing all rows"); }, disabled: !sheet().autoFilter },
@@ -2119,7 +2220,7 @@ function buildMenubar() {
       { label: "Pivot table…", action: () => createPivot() },
       { label: "Refresh pivot table", action: () => createPivot(sheet()), disabled: !pivotDefs.get(sheet()) },
       { sep: true },
-      { label: "Remove duplicates", action: () => removeDuplicates() },
+      { label: "Remove duplicates…", action: () => removeDuplicatesDialog() },
       { label: "Trim whitespace", action: () => trimWhitespace() },
       { sep: true },
       { label: "Number locale", submenu: Object.values(LOCALES).map((l) => ({ label: localeLabel(l.id), checked: locale().id === l.id, action: () => setLocaleId(l.id) })) },
@@ -2286,7 +2387,7 @@ function buildToolbar() {
   btn("merge", "Merge / unmerge cells", "⊟", () => toggleMerge());
   sep();
   btn("freeze", "Freeze rows and columns", "❄ ▾", (b) => showMenu(b, freezeMenu()));
-  btn("sort", "Sort", "⇅ A-Z ▾", (b) => showMenu(b, [{ label: "Sort range A → Z", action: () => sortBy(grid().selection.active.c, true) }, { label: "Sort range Z → A", action: () => sortBy(grid().selection.active.c, false) }, { label: "Sort range…", action: () => sortDialog() }]));
+  btn("sort", "Sort", "⇅ A-Z ▾", (b) => showMenu(b, sortItems()));
   btn("filter", "Create / remove filter", "▽", () => toggleFilter(), `${MOD}+Shift+L`);
   sep();
   btn("sum", "Functions", "Σ ▾", (b) => showMenu(b, [
