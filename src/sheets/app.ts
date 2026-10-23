@@ -1162,17 +1162,44 @@ function tableRange(): Range {
   return dataBlock(s, rg.r1, rg.c1);
 }
 
+/**
+ * Range a sort works on. Sorting moves whole rows: a selection narrower than its table (say column
+ * A, rows 1-9999, of a table spanning A:K) is widened to the table's full width for the selected
+ * rows, like Excel's "Expand the selection" - sorting one column on its own tears every row apart
+ * (and leaves the moved formulas pointing at the wrong rows). The table is the data block around
+ * the selection, so a column with a header but no data yet comes along, while a separate table
+ * beyond a blank column is left alone. An active filter's range wins; a single cell sorts its block.
+ */
+function sortRange(): Range {
+  const s = sheet();
+  const a = grid().selection.active;
+  const rg = rawSel();
+  if (s.autoFilter && inRange(s.autoFilter, a.r, a.c)) return boundRange(s, s.autoFilter);
+  if (rg.r1 === rg.r2 && rg.c1 === rg.c2) return dataBlock(s, rg.r1, rg.c1);
+  const sel = boundRange(s, rg);
+  // Find the table from a filled cell of the selection (the active cell may sit past the data,
+  // e.g. after clicking a column header).
+  const has = (r: number, c: number) => { const v = s.cells.get(key(r, c))?.v; return v !== null && v !== undefined && v !== ""; };
+  let ar = a.r, ac = a.c;
+  if (!inRange(sel, ar, ac) || !has(ar, ac)) {
+    find: for (let r = sel.r1; r <= sel.r2; r++) for (let c = sel.c1; c <= sel.c2; c++) if (has(r, c)) { ar = r; ac = c; break find; }
+  }
+  const block = dataBlock(s, ar, ac);
+  return { r1: sel.r1, c1: Math.min(sel.c1, block.c1), r2: sel.r2, c2: Math.max(sel.c2, block.c2) };
+}
+
 function sortBy(col: number, ascending: boolean, range?: Range, header?: boolean) {
-  const rg = range || tableRange();
+  const rg = range || sortRange();
   const hasHeader = header ?? (!!sheet().autoFilter && sheet().autoFilter!.r1 === rg.r1 || looksLikeHeader(sheet(), rg));
   const ch = sortChanges(sheet(), rg, col, ascending, hasHeader);
   if (!ch.length) { flash("Already sorted"); return; }
   applyChanges(ch, ascending ? "Sort A → Z" : "Sort Z → A");
   grid().setRanges([rg], { r: rg.r1, c: col });
+  flash(`Sorted ${rangeRefShort(rg)} by column ${colName(col)} - whole rows`);
 }
 
 async function sortDialog() {
-  const rg = tableRange();
+  const rg = sortRange();
   const s = sheet();
   const hasHeader = looksLikeHeader(s, rg) || (!!s.autoFilter && s.autoFilter.r1 === rg.r1);
   const cols: { c: number; label: string }[] = [];
